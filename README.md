@@ -42,33 +42,33 @@ re# -p error -p timeout -t rust       # only in rust files
 re# -i -p error -p timeout            # case insensitive
 ```
 
-### Regex algebra
+### Pattern operators
 
-`&` (intersection) and `~` (complement) let you combine constraints in a single pattern.
-`_` matches any character (like `.` but works across the algebra).
+`&` means AND - both sides must match.
+`~` means NOT - exclude what matches.
+`_` matches any single byte including newline (unlike `.` which stops at `\n`).
 
 ```sh
 # hex strings that contain both a digit and a letter
 re# '([0-9a-f]+)&(_*[0-9]_*)&(_*[a-f]_*)'
 
-# lines with "error" AND "timeout" (same as -W, but inline)
-re# '(_*error_*)&(_*timeout_*)'
-
-# match identifiers 8-20 chars long containing "config"
+# identifiers 8-20 chars long containing "config"
 re# '([a-zA-Z_]+)&(_{8,20})&(_*config_*)'
 
-# complement: lines NOT containing "debug"
+# lines NOT containing "debug"
 re# '~(_*debug_*)' src/
 ```
 
 try patterns interactively in the [web playground](https://ieviev.github.io/resharp-webapp/).
 
-## `_` = any byte in RE#
+### `_` wildcard
+
+in RE#, `_` replaces `.` as the "match anything" character. the difference is `_` also matches newlines, which matters for paragraph search and multi-line patterns.
 
 ```sh
 re# 'my_function'              # matches myXfunction, my.function, ...
 re# 'my\_function'             # literal underscore
-re# -R 'my_function'           # -R: compatibility mode
+re# -R 'my_function'           # -R: standard regex mode (. and _ behave normally)
 re# -F 'my_function'           # -F: fixed string, no regex at all
 ```
 
@@ -78,7 +78,7 @@ re# -F 'my_function'           # -F: fixed string, no regex at all
 |------|-------|-----|
 | `-a` / `--text` | `-uuu` | `-a` is taken by `--and` |
 | `_` is literal | `_` is wildcard | use `-R` or `\_` for literal |
-| pattern is standard regex | pattern has algebra | `&`, `~`, `_` are operators; use `-R` for compatibility mode |
+| pattern is standard regex | pattern has `&`, `~`, `_` operators | use `-R` for standard regex mode |
 
 ## Exit codes
 
