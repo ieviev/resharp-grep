@@ -70,9 +70,7 @@ try patterns interactively in the [web playground](https://ieviev.github.io/resh
 re# '(_*(api_key|secret|token|password)_*)&(_*[=:]_*)' -i .
 ```
 
-## The Underscore
-
-`_` is the universal wildcard, not a literal underscore.
+## `_` = any byte in RE#
 
 ```sh
 re# 'my_function'              # matches myXfunction, my.function, ...
