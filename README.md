@@ -16,7 +16,7 @@ re# -w 'error' -t rust                # whole word, rust files only
 echo 'hello world' | re# 'hello'      # stdin
 ```
 
-### Multi-Word Search
+### Multi-word search
 
 `-W` finds lines containing all given words:
 
@@ -32,7 +32,7 @@ re# -W error --not debug src/         # "error" without "debug"
 re# -W error -W warn --not debug .    # "error" and "warn", but not "debug"
 ```
 
-### Paragraph Search
+### Paragraph search
 
 `-p` searches paragraphs (blocks separated by blank lines) instead of lines:
 
@@ -42,7 +42,7 @@ re# -p error -p timeout -t rust       # only in rust files
 re# -i -p error -p timeout            # case insensitive
 ```
 
-### Regex Algebra
+### Regex algebra
 
 `&` (intersection) and `~` (complement) let you combine constraints in a single pattern.
 `_` matches any character (like `.` but works across the algebra).
@@ -72,15 +72,15 @@ re# -R 'my_function'           # -R: compatibility mode
 re# -F 'my_function'           # -F: fixed string, no regex at all
 ```
 
-## Differences From Ripgrep
+## Differences from `rg`
 
-| ripgrep | re# | why |
-|---------|-----|-----|
+| `rg` | `re#` | why |
+|------|-------|-----|
 | `-a` / `--text` | `-uuu` | `-a` is taken by `--and` |
 | `_` is literal | `_` is wildcard | use `-R` or `\_` for literal |
 | pattern is standard regex | pattern has algebra | `&`, `~`, `_` are operators; use `-R` for compatibility mode |
 
-## Exit Codes
+## Exit codes
 
 `0` match, `1` no match, `2` error
 
@@ -92,7 +92,7 @@ re# -F 'my_function'           # -F: fixed string, no regex at all
 cargo install resharp-grep  # binary is named `resharp`
 ```
 
-### Prebuilt Binaries
+### Prebuilt binaries
 
 download from [GitHub releases](https://github.com/ieviev/resharp-cli/releases):
 
