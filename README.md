@@ -63,19 +63,12 @@ re# '~(_*debug_*)' src/
 
 try patterns interactively in the [web playground](https://ieviev.github.io/resharp-webapp/).
 
-### Cybersecurity
-
-```sh
-# key=value pairs where the key looks like a secret
-re# '(_*(api_key|secret|token|password)_*)&(_*[=:]_*)' -i .
-```
-
 ## `_` = any byte in RE#
 
 ```sh
 re# 'my_function'              # matches myXfunction, my.function, ...
 re# 'my\_function'             # literal underscore
-re# -R 'my_function'           # -R: raw regex mode, no algebra
+re# -R 'my_function'           # -R: compatibility mode
 re# -F 'my_function'           # -F: fixed string, no regex at all
 ```
 
@@ -85,13 +78,19 @@ re# -F 'my_function'           # -F: fixed string, no regex at all
 |---------|-----|-----|
 | `-a` / `--text` | `-uuu` | `-a` is taken by `--and` |
 | `_` is literal | `_` is wildcard | use `-R` or `\_` for literal |
-| pattern is standard regex | pattern has algebra | `&`, `~`, `_` are operators; `-R` for compatibility mode |
+| pattern is standard regex | pattern has algebra | `&`, `~`, `_` are operators; use `-R` for compatibility mode |
 
 ## Exit Codes
 
 `0` match, `1` no match, `2` error
 
 ## Install
+
+### Cargo
+
+```sh
+cargo install resharp-grep  # binary is named `resharp`
+```
 
 ### Prebuilt Binaries
 
@@ -120,12 +119,6 @@ inputs.resharp.url = "github:ieviev/resharp-cli";
 ```
 
 the nix package also installs a `re#` symlink and shell completions.
-
-### Cargo
-
-```sh
-cargo install resharp-grep  # binary is named `resharp`
-```
 
 ## License
 
