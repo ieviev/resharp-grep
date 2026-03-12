@@ -10,7 +10,7 @@ a grep that can search for multiple words at once and across paragraphs, powered
 ## Quickstart
 
 ```sh
-re# 'TODO' src/                       # search like ripgrep
+re# 'TODO' src/                       # find 'TODO' in src/
 re# -i 'fixme' .                      # case insensitive
 re# -w 'error' -t rust                # whole word, rust files only
 echo 'hello world' | re# 'hello'      # stdin
