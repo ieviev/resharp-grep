@@ -11,13 +11,13 @@ use clap::Parser;
     before_help = "\x1b[1mExamples:\x1b[0m
   re# 'TODO' src/                       search like ripgrep
   re# -i 'error' .                      case insensitive
-  re# -W error -W timeout src/          lines with both words
-  re# -W error --not debug .            \"error\" without \"debug\"
+  re# -a error -a timeout src/          lines with both words
+  re# -a error --not debug .            \"error\" without \"debug\"
   re# -p error -p timeout -t rust       paragraphs with both words
   re# '(_*error_*)&~(_*debug_*)'        regex algebra
-  re# --scope file -W serde -W async -l src/  files with both words
+  re# --scope file -a serde -a async -l src/  files with both words
   re# --json 'TODO' src/               JSON output for agents
-  re# -P 5 -W unsafe -W unwrap src/    proximity search",
+  re# -P 5 -a unsafe -a unwrap src/    proximity search",
     after_help = "resharp supports intersection (&), complement (~(...)), and universal wildcard (_).
 see https://github.com/ieviev/resharp for the regex engine."
 )]
@@ -112,12 +112,8 @@ pub struct Args {
     #[arg(short = 'R', long = "raw")]
     pub raw: bool,
 
-    /// require scope contains WORD (intersection, repeatable)
-    #[arg(short = 'W', long = "with", value_name = "WORD")]
-    pub with: Vec<String>,
-
-    /// require line also contains PATTERN (intersection, repeatable)
-    #[arg(short = 'a', long = "and", value_name = "PATTERN")]
+    /// add intersection constraint (repeatable)
+    #[arg(short = 'a', long = "and", visible_short_alias = 'W', visible_alias = "with", value_name = "PATTERN")]
     pub and: Vec<String>,
 
     /// exclude lines/paragraphs containing PATTERN (complement, repeatable)
@@ -297,14 +293,13 @@ impl Args {
         }
     }
 
-    /// collect all "contains" words from -p, -W, and -a
+    /// collect all "contains" words from -p and -a
     fn contains_words(&self) -> Vec<&str> {
         let para = match &self.paragraphs {
             Some(words) => words.as_slice(),
             None => &[],
         };
         para.iter()
-            .chain(self.with.iter())
             .chain(self.and.iter())
             .map(|s| s.as_str())
             .collect()
@@ -614,9 +609,8 @@ impl Args {
 pub fn parse() -> anyhow::Result<Args> {
     let mut args = Args::parse();
 
-    // when -e/-f/-W/-F/-a is used or -p has words, positional PATTERN is a PATH
+    // when -e/-f/-a/-F is used or -p has words, positional PATTERN is a PATH
     let has_words = args.paragraphs.as_ref().map_or(false, |v| !v.is_empty())
-        || !args.with.is_empty()
         || !args.and.is_empty()
         || args.fixed_strings.as_ref().map_or(false, |v| !v.is_empty());
     if (!args.regexp.is_empty() || !args.pattern_file.is_empty() || has_words)

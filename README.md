@@ -26,7 +26,6 @@ re# --lit 'std::io' --lit 'Error' src/            # same, but with literal strin
 | `-F` / `--lit` | must contain literal string (no regex) |
 | `-N` / `--not` | must not contain pattern |
 
-`-W` / `--with` is an alias for `-a`.
 
 ## controlling scope
 
@@ -137,3 +136,5 @@ see the [RE# engine](https://github.com/ieviev/resharp) for more on the regex al
 ## license
 
 MIT
+
+Have fun!
