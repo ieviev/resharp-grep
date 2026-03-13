@@ -105,7 +105,7 @@ pub struct Args {
     /// treat pattern as literal string
     /// with values: add literal string constraints (repeatable)
     /// e.g. -F lit1 -F lit2
-    #[arg(short = 'F', long = "fixed-strings", num_args = 0..=1, action = clap::ArgAction::Append, value_name = "STRING")]
+    #[arg(short = 'F', long = "fixed-strings", aliases = ["fixed", "lit"], num_args = 0..=1, action = clap::ArgAction::Append, value_name = "STRING")]
     pub fixed_strings: Option<Vec<String>>,
 
     /// raw regex mode (standard regex, _ is literal, no resharp algebra)
