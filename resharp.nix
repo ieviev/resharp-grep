@@ -4,7 +4,7 @@
   rustPlatform,
 }:
 rustPlatform.buildRustPackage {
-  pname = "resharp";
+  pname = "re";
   version = "0.1.0";
   src = lib.cleanSource ./.;
   cargoLock.lockFile = ./Cargo.lock;
@@ -12,16 +12,16 @@ rustPlatform.buildRustPackage {
   nativeBuildInputs = [ installShellFiles ];
 
   postInstall = ''
-    ln -s $out/bin/resharp "$out/bin/re#"
-    installShellCompletion --cmd resharp \
-      --bash <($out/bin/resharp --completions bash) \
-      --zsh <($out/bin/resharp --completions zsh) \
-      --fish <($out/bin/resharp --completions fish)
+    ln -s $out/bin/re $out/bin/resharp
+    installShellCompletion --cmd re \
+      --bash <($out/bin/re --completions bash) \
+      --zsh <($out/bin/re --completions zsh) \
+      --fish <($out/bin/re --completions fish)
   '';
 
   meta = {
     description = "grep tool powered by the resharp regex engine with intersection, complement, and lookarounds";
     license = lib.licenses.mit;
-    mainProgram = "resharp";
+    mainProgram = "re";
   };
 }

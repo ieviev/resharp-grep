@@ -20,6 +20,7 @@ pub struct PrinterOpts {
     pub json: bool,
     pub unique: bool,
     pub show_scope: bool,
+    pub null: bool,
 }
 
 impl PrinterOpts {
@@ -43,6 +44,7 @@ impl PrinterOpts {
             json: args.json,
             unique: args.unique,
             show_scope: args.show_scope,
+            null: args.null,
         }
     }
 }
@@ -138,7 +140,11 @@ pub fn write_results_with_unique(
     if opts.files_without_match {
         if matches.is_empty() {
             if let Some(p) = path {
-                writeln!(out, "{p}")?;
+                if opts.null {
+                    write!(out, "{p}\0")?;
+                } else {
+                    writeln!(out, "{p}")?;
+                }
             }
         }
         return Ok(());
@@ -148,10 +154,14 @@ pub fn write_results_with_unique(
     if opts.files_with_matches {
         if !matches.is_empty() {
             if let Some(p) = path {
-                out.set_color(ColorSpec::new().set_fg(Some(Color::Magenta)))?;
-                write!(out, "{p}")?;
-                out.reset()?;
-                writeln!(out)?;
+                if opts.null {
+                    write!(out, "{p}\0")?;
+                } else {
+                    out.set_color(ColorSpec::new().set_fg(Some(Color::Magenta)))?;
+                    write!(out, "{p}")?;
+                    out.reset()?;
+                    writeln!(out)?;
+                }
             }
         }
         return Ok(());

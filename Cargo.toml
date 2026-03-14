@@ -5,14 +5,14 @@ edition = "2021"
 description = "a grep-like search tool powered by the resharp regex engine"
 license = "MIT"
 authors = ["Ian Erik Varatalu"]
-repository = "https://github.com/ieviev/resharp-cli"
-homepage = "https://github.com/ieviev/resharp-cli"
+repository = "https://github.com/ieviev/resharp-grep"
+homepage = "https://github.com/ieviev/resharp-grep"
 keywords = ["grep", "regex", "search", "cli", "intersection"]
 categories = ["command-line-utilities", "text-processing"]
 rust-version = "1.70"
 
 [[bin]]
-name = "resharp"
+name = "re"
 path = "src/main.rs"
 
 [dependencies]

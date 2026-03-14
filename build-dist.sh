@@ -9,10 +9,10 @@ TARGETS=(
 )
 
 NAMES=(
-    resharp-x86_64-linux
-    resharp-aarch64-linux
-    resharp-aarch64-macos
-    resharp-x86_64-windows.exe
+    re-x86_64-linux
+    re-aarch64-linux
+    re-aarch64-macos
+    re-x86_64-windows.exe
 )
 
 NEEDS_BUILD_STD=(
@@ -36,7 +36,7 @@ for i in "${!TARGETS[@]}"; do
 
     cargo zigbuild "${flags[@]}"
 
-    src="target/$target/release/resharp"
+    src="target/$target/release/re"
     [[ "$target" == *windows* ]] && src+=".exe"
     cp "$src" "dist/$name"
 done

@@ -39,7 +39,7 @@ impl Drop for TestDir {
 }
 
 fn resharp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_resharp"))
+    Command::new(env!("CARGO_BIN_EXE_re"))
 }
 
 fn run_stdin(args: &[&str], input: &str) -> (String, i32) {
@@ -67,6 +67,19 @@ fn run_args(args: &[&str]) -> (String, i32) {
     let stdout = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
     let code = out.status.code().unwrap_or(-1);
     (stdout, code)
+}
+
+fn run_args_full(args: &[&str]) -> (String, String, i32) {
+    let out = resharp()
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).trim_end().to_string();
+    let code = out.status.code().unwrap_or(-1);
+    (stdout, stderr, code)
 }
 
 
@@ -975,4 +988,523 @@ fn raw_backslash_preserved() {
     // \d should still work in raw mode
     let (out, _) = run_stdin(&["-R", r"\d+_\d+"], "3_4\nabc\n12_34\n");
     assert_eq!(out, "1:3_4\n3:12_34");
+}
+
+
+#[test]
+fn files_lists_all() {
+    let td = TestDir::new();
+    td.write("a.txt", "x\n");
+    td.write("b.rs", "y\n");
+    let (out, code) = run_args(&["--files", "--color", "never", td.path().to_str().unwrap()]);
+    assert_eq!(code, 0);
+    assert!(out.contains("a.txt"));
+    assert!(out.contains("b.rs"));
+}
+
+#[test]
+fn files_glob_include() {
+    let td = TestDir::new();
+    td.write("main.rs", "fn main() {}\n");
+    td.write("lib.py", "pass\n");
+    td.write("data.json", "{}\n");
+    let (out, code) = run_args(&[
+        "--files", "-g", "*.rs", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("main.rs"));
+    assert!(!out.contains("lib.py"));
+    assert!(!out.contains("data.json"));
+}
+
+#[test]
+fn files_glob_exclude() {
+    let td = TestDir::new();
+    td.write("main.rs", "fn main() {}\n");
+    td.write("test_main.rs", "fn test() {}\n");
+    td.write("lib.rs", "pub mod lib;\n");
+    let (out, code) = run_args(&[
+        "--files", "-g", "*.rs", "-g", "!test_*", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("main.rs"));
+    assert!(out.contains("lib.rs"));
+    assert!(!out.contains("test_main.rs"));
+}
+
+#[test]
+fn files_type_filter() {
+    let td = TestDir::new();
+    td.write("dir/main.rs", "fn main() {}\n");
+    td.write("dir/main.py", "def main():\n");
+    let (out, code) = run_args(&[
+        "--files", "-t", "rust", "--color", "never",
+        td.path().join("dir").to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("main.rs"));
+    assert!(!out.contains("main.py"));
+}
+
+#[test]
+fn files_type_not() {
+    let td = TestDir::new();
+    td.write("main.rs", "fn main() {}\n");
+    td.write("main.py", "def main():\n");
+    td.write("data.json", "{}\n");
+    let (out, code) = run_args(&[
+        "--files", "-T", "rust", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(!out.contains("main.rs"));
+    assert!(out.contains("main.py"));
+    assert!(out.contains("data.json"));
+}
+
+#[test]
+fn files_sorted() {
+    let td = TestDir::new();
+    td.write("c.txt", "3\n");
+    td.write("a.txt", "1\n");
+    td.write("b.txt", "2\n");
+    let (out, code) = run_args(&[
+        "--files", "--sort", "path", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 3);
+    assert!(lines[0].ends_with("a.txt"));
+    assert!(lines[1].ends_with("b.txt"));
+    assert!(lines[2].ends_with("c.txt"));
+}
+
+#[test]
+fn files_max_depth() {
+    let td = TestDir::new();
+    td.write("top.txt", "x\n");
+    td.write("sub/deep.txt", "y\n");
+    td.write("sub/sub2/deeper.txt", "z\n");
+    let (out, code) = run_args(&[
+        "--files", "--max-depth", "1", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("top.txt"));
+    assert!(!out.contains("deep.txt"));
+    assert!(!out.contains("deeper.txt"));
+}
+
+#[test]
+fn files_hidden() {
+    let td = TestDir::new();
+    td.write(".hidden", "secret\n");
+    td.write("visible.txt", "public\n");
+    let (out_no_hidden, _) = run_args(&[
+        "--files", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert!(!out_no_hidden.contains(".hidden"));
+    assert!(out_no_hidden.contains("visible.txt"));
+
+    let (out_hidden, _) = run_args(&[
+        "--files", "--hidden", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert!(out_hidden.contains(".hidden"));
+    assert!(out_hidden.contains("visible.txt"));
+}
+
+#[test]
+fn files_exit_1_no_match() {
+    let td = TestDir::new();
+    td.write("main.rs", "fn main() {}\n");
+    let (out, code) = run_args(&[
+        "--files", "-g", "*.NOPE", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(out, "");
+    assert_eq!(code, 1);
+}
+
+#[test]
+fn files_exit_2_no_dir() {
+    let (_, code) = run_args(&["--files", "/nonexistent/path"]);
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn files_positional_as_path() {
+    let td = TestDir::new();
+    td.write("sub/a.rs", "fn a() {}\n");
+    td.write("sub/b.py", "pass\n");
+    td.write("other/c.rs", "fn c() {}\n");
+    let (out, code) = run_args(&[
+        "--files", "-g", "*.rs", "--color", "never",
+        td.path().join("sub").to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("a.rs"));
+    assert!(!out.contains("b.py"));
+    assert!(!out.contains("c.rs"));
+}
+
+#[test]
+fn files_max_filesize() {
+    let td = TestDir::new();
+    td.write("small.txt", "hi\n");
+    td.write("big.txt", &"x".repeat(2048));
+    let (out, code) = run_args(&[
+        "--files", "--max-filesize", "1K", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("small.txt"));
+    assert!(!out.contains("big.txt"));
+}
+
+#[test]
+fn files_glob_and_type_combined() {
+    let td = TestDir::new();
+    td.write("main.rs", "fn main() {}\n");
+    td.write("lib.rs", "pub mod lib;\n");
+    td.write("test.rs", "fn test() {}\n");
+    td.write("script.py", "pass\n");
+    let (out, code) = run_args(&[
+        "--files", "-t", "rust", "-g", "!test*", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("main.rs"));
+    assert!(out.contains("lib.rs"));
+    assert!(!out.contains("test.rs"));
+    assert!(!out.contains("script.py"));
+}
+
+#[test]
+fn files_absolute_paths() {
+    let td = TestDir::new();
+    td.write("hello.txt", "world\n");
+    let (out, _) = run_args(&[
+        "--files", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert!(out.starts_with('/'), "expected absolute path, got: {out}");
+}
+
+#[test]
+fn files_content_search_still_works() {
+    let td = TestDir::new();
+    td.write("a.rs", "fn main() {}\n");
+    td.write("b.py", "def main():\n");
+    let (out, code) = run_args(&[
+        "-g", "*.rs", "--no-heading", "--no-line-number", "--color", "never",
+        "fn main", td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("fn main() {}"));
+    assert!(!out.contains("def main"));
+}
+
+#[test]
+fn files_multiple_paths() {
+    let td = TestDir::new();
+    td.write("dir1/a.txt", "x\n");
+    td.write("dir2/b.txt", "y\n");
+    let (out, code) = run_args(&[
+        "--files", "--color", "never",
+        td.path().join("dir1").to_str().unwrap(),
+        td.path().join("dir2").to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("a.txt"));
+    assert!(out.contains("b.txt"));
+}
+
+#[test]
+fn files_unrestricted() {
+    let td = TestDir::new();
+    td.write(".secret", "hidden\n");
+    td.write("visible.txt", "shown\n");
+    let (out, _) = run_args(&[
+        "--files", "-u", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert!(out.contains(".secret"));
+    assert!(out.contains("visible.txt"));
+}
+
+#[test]
+fn files_iglob() {
+    let td = TestDir::new();
+    td.write("Main.RS", "fn main() {}\n");
+    td.write("lib.rs", "pub mod lib;\n");
+    td.write("data.json", "{}\n");
+    let (out, code) = run_args(&[
+        "--files", "--iglob", "*.rs", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("Main.RS"));
+    assert!(out.contains("lib.rs"));
+    assert!(!out.contains("data.json"));
+}
+
+#[test]
+fn files_nested_dirs() {
+    let td = TestDir::new();
+    td.write("src/main.rs", "fn main() {}\n");
+    td.write("src/lib/mod.rs", "pub mod lib;\n");
+    td.write("tests/test.py", "pass\n");
+    td.write("docs/readme.md", "hello\n");
+    let (out, code) = run_args(&[
+        "--files", "-g", "*.rs", "--sort", "path", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("mod.rs"));
+    assert!(out.contains("main.rs"));
+    assert!(!out.contains("test.py"));
+    assert!(!out.contains("readme.md"));
+}
+
+
+#[test]
+fn stats_content_search() {
+    let td = TestDir::new();
+    td.write("a.txt", "apple pie\nbanana split\napple sauce\n");
+    td.write("b.txt", "cherry tart\n");
+    let (_, stderr, code) = run_args_full(&[
+        "--stats", "--color", "never",
+        "apple", td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(stderr.contains("2 files searched"), "stderr: {stderr}");
+    assert!(stderr.contains("1 matched"), "stderr: {stderr}");
+    assert!(stderr.contains("2 matches"), "stderr: {stderr}");
+    assert!(stderr.contains("4 lines"), "stderr: {stderr}");
+}
+
+#[test]
+fn stats_content_no_match() {
+    let td = TestDir::new();
+    td.write("a.txt", "hello world\n");
+    let (_, stderr, code) = run_args_full(&[
+        "--stats", "--color", "never",
+        "zzzzz", td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("1 files searched"), "stderr: {stderr}");
+    assert!(stderr.contains("0 matched"), "stderr: {stderr}");
+    assert!(stderr.contains("0 matches"), "stderr: {stderr}");
+}
+
+#[test]
+fn stats_files_mode() {
+    let td = TestDir::new();
+    td.write("a.rs", "fn main() {}\nfn foo() {}\n");
+    td.write("b.rs", "fn bar() {}\n");
+    td.write("c.py", "pass\n");
+    let (_, stderr, code) = run_args_full(&[
+        "--files", "--stats", "-g", "*.rs", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(stderr.contains("2 files"), "stderr: {stderr}");
+    assert!(stderr.contains("3 lines"), "stderr: {stderr}");
+}
+
+#[test]
+fn stats_files_mode_line_count() {
+    let td = TestDir::new();
+    td.write("one.txt", "line1\nline2\nline3\nline4\nline5\n");
+    td.write("two.txt", "a\nb\nc\n");
+    let (_, stderr, _) = run_args_full(&[
+        "--files", "--stats", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert!(stderr.contains("2 files"), "stderr: {stderr}");
+    assert!(stderr.contains("8 lines"), "stderr: {stderr}");
+}
+
+#[test]
+fn stats_has_timing() {
+    let td = TestDir::new();
+    td.write("a.txt", "hello\n");
+    let (_, stderr, _) = run_args_full(&[
+        "--stats", "--color", "never",
+        "hello", td.path().to_str().unwrap(),
+    ]);
+    // timing should be in brackets like [1.2ms] or [0.05s]
+    assert!(stderr.contains('[') && stderr.contains(']'), "stderr: {stderr}");
+}
+
+#[test]
+fn no_stats_by_default() {
+    let td = TestDir::new();
+    td.write("a.txt", "hello\n");
+    let (_, stderr, _) = run_args_full(&[
+        "--color", "never",
+        "hello", td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(stderr, "", "stderr should be empty without --stats: {stderr}");
+}
+
+
+#[test]
+fn exec_files_mode() {
+    let td = TestDir::new();
+    td.write("a.txt", "hello\n");
+    td.write("b.txt", "world\n");
+    let (out, code) = run_args(&[
+        "--files", "--exec", "echo found: {}", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("found:"), "out: {out}");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 2);
+}
+
+#[test]
+fn exec_content_search() {
+    let td = TestDir::new();
+    td.write("match.txt", "apple pie\n");
+    td.write("miss.txt", "banana split\n");
+    let (out, code) = run_args(&[
+        "--exec", "echo hit: {}", "--color", "never",
+        "apple", td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("hit:"), "out: {out}");
+    assert!(out.contains("match.txt"), "out: {out}");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 1);
+}
+
+#[test]
+fn exec_no_placeholder_appends_path() {
+    let td = TestDir::new();
+    td.write("a.txt", "x\n");
+    let (out, code) = run_args(&[
+        "--files", "--exec", "echo", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("a.txt"), "out: {out}");
+}
+
+#[test]
+fn exec_exit_1_no_files() {
+    let td = TestDir::new();
+    td.write("a.txt", "hello\n");
+    let (_, code) = run_args(&[
+        "--files", "-g", "*.NOPE", "--exec", "echo {}",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 1);
+}
+
+#[test]
+fn exec_with_glob_filter() {
+    let td = TestDir::new();
+    td.write("main.rs", "fn main() {}\n");
+    td.write("lib.py", "pass\n");
+    let (out, code) = run_args(&[
+        "--files", "-g", "*.rs", "--exec", "echo {}",
+        "--color", "never", td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("main.rs"), "out: {out}");
+    assert!(!out.contains("lib.py"), "out: {out}");
+}
+
+#[test]
+fn exec_with_stats() {
+    let td = TestDir::new();
+    td.write("a.rs", "fn main() {}\n");
+    td.write("b.rs", "fn foo() {}\n");
+    let (_, stderr, code) = run_args_full(&[
+        "--files", "-g", "*.rs", "--exec", "echo {}",
+        "--stats", "--color", "never", td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(stderr.contains("2 files"), "stderr: {stderr}");
+}
+
+#[test]
+fn exec_spaces_in_path() {
+    let td = TestDir::new();
+    td.write("dir with spaces/file.txt", "hello\n");
+    let (out, code) = run_args(&[
+        "--files", "--exec", "echo {}",
+        "--color", "never", td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("dir with spaces"), "out: {out}");
+}
+
+
+#[test]
+fn null_files_mode() {
+    let td = TestDir::new();
+    td.write("a.txt", "hello\n");
+    td.write("b.txt", "world\n");
+    let (out, code) = run_args(&[
+        "--files", "-0", "--sort", "path", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    let paths: Vec<&str> = out.split('\0').filter(|s| !s.is_empty()).collect();
+    assert_eq!(paths.len(), 2);
+    assert!(paths[0].ends_with("a.txt"));
+    assert!(paths[1].ends_with("b.txt"));
+    assert!(!out.contains('\n'));
+}
+
+#[test]
+fn null_files_with_matches() {
+    let td = TestDir::new();
+    td.write("match.txt", "apple pie\n");
+    td.write("miss.txt", "banana split\n");
+    let (out, code) = run_args(&[
+        "-l", "-0", "--color", "never",
+        "apple", td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    let paths: Vec<&str> = out.split('\0').filter(|s| !s.is_empty()).collect();
+    assert_eq!(paths.len(), 1);
+    assert!(paths[0].contains("match.txt"));
+    assert!(!out.contains('\n'));
+}
+
+#[test]
+fn null_files_without_match() {
+    let td = TestDir::new();
+    td.write("match.txt", "apple pie\n");
+    td.write("miss.txt", "banana split\n");
+    let (out, code) = run_args(&[
+        "--files-without-match", "-0", "--color", "never",
+        "apple", td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    let paths: Vec<&str> = out.split('\0').filter(|s| !s.is_empty()).collect();
+    assert_eq!(paths.len(), 1);
+    assert!(paths[0].contains("miss.txt"));
+    assert!(!out.contains('\n'));
+}
+
+#[test]
+fn null_not_set_by_default() {
+    let td = TestDir::new();
+    td.write("a.txt", "hello\n");
+    let (out, _) = run_args(&[
+        "-l", "--color", "never",
+        "hello", td.path().to_str().unwrap(),
+    ]);
+    assert!(out.contains('\n') || out.ends_with("a.txt"));
+    assert!(!out.contains('\0'));
 }

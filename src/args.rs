@@ -5,19 +5,19 @@ use clap::Parser;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "re#",
+    name = "re",
     about = "recursive search with boolean constraints, powered by resharp",
     version,
     before_help = "\x1b[1mExamples:\x1b[0m
-  re# 'TODO' src/                       search like ripgrep
-  re# -i 'error' .                      case insensitive
-  re# error -a timeout src/              lines with both words
-  re# error -N debug .                  \"error\" without \"debug\"
-  re# -p error -p timeout -t rust       paragraphs with both words
-  re# '(_*error_*)&~(_*debug_*)'        regex algebra
-  re# serde -a async --scope file -l src/  files with both words
-  re# --json 'TODO' src/               JSON output for agents
-  re# -P 5 unsafe -a unwrap src/       proximity search",
+  re 'TODO' src/                        search like ripgrep
+  re -i 'error' .                       case insensitive
+  re error -a timeout src/              lines with both words
+  re error -N debug .                   \"error\" without \"debug\"
+  re -p error -p timeout -t rust        paragraphs with both words
+  re '(_*error_*)&~(_*debug_*)'         regex algebra
+  re serde -a async --scope file -l src/  files with both words
+  re --json 'TODO' src/                JSON output for agents
+  re -P 5 unsafe -a unwrap src/        proximity search",
     after_help = "resharp supports intersection (&), complement (~(...)), and universal wildcard (_).
 see https://github.com/ieviev/resharp for the regex engine."
 )]
@@ -164,6 +164,10 @@ pub struct Args {
     #[arg(short = 'T', long = "type-not", value_name = "TYPE")]
     pub type_not: Vec<String>,
 
+    /// list files matching globs/types (no content search)
+    #[arg(long = "files")]
+    pub files: bool,
+
     /// list available file types
     #[arg(long = "type-list")]
     pub type_list: bool,
@@ -249,6 +253,18 @@ pub struct Args {
     /// deduplicate matched strings (useful with -o)
     #[arg(long = "unique")]
     pub unique: bool,
+
+    /// print summary stats (files, matches, lines, time)
+    #[arg(long = "stats")]
+    pub stats: bool,
+
+    /// NUL byte as separator (for xargs -0)
+    #[arg(short = '0', long = "null")]
+    pub null: bool,
+
+    /// run CMD on each matched file ({} = path, appended if absent)
+    #[arg(long = "exec", value_name = "CMD")]
+    pub exec: Option<String>,
 
     /// output results as JSON (one object per match line)
     #[arg(long = "json")]
@@ -612,7 +628,7 @@ pub fn parse() -> anyhow::Result<Args> {
     // -a is a modifier, not a pattern source, so it doesn't cause reinterpretation
     let has_words = args.paragraphs.as_ref().map_or(false, |v| !v.is_empty())
         || args.fixed_strings.as_ref().map_or(false, |v| !v.is_empty());
-    if (!args.regexp.is_empty() || !args.pattern_file.is_empty() || has_words)
+    if (!args.regexp.is_empty() || !args.pattern_file.is_empty() || has_words || args.files)
         && args.pattern.is_some()
     {
         let pat = args.pattern.take().unwrap();

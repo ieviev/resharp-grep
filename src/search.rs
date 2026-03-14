@@ -188,7 +188,17 @@ fn is_binary(buf: &[u8]) -> bool {
     memchr::memchr(0, &buf[..check_len]).is_some()
 }
 
+/// count lines in a buffer
+pub fn count_lines(buf: &[u8]) -> usize {
+    if buf.is_empty() {
+        return 0;
+    }
+    let newlines = memchr::memchr_iter(b'\n', buf).count();
+    if buf.last() == Some(&b'\n') { newlines } else { newlines + 1 }
+}
+
 /// search a file, print results to stdout
+/// returns (found, had_error, match_count, line_count)
 pub fn search_file(
     re: &resharp::Regex,
     path: &Path,
@@ -197,36 +207,38 @@ pub fn search_file(
     color_choice: termcolor::ColorChoice,
     effective_max: Option<usize>,
     unique_set: Option<&mut printer::UniqueSet>,
-) -> anyhow::Result<(bool, bool, usize)> {
+) -> anyhow::Result<(bool, bool, usize, usize)> {
     let data = read_file(path, args)?;
     let buf = data.as_ref();
+    let line_count = count_lines(buf);
 
     if !args.search_binary() && is_binary(buf) {
-        return Ok((false, false, 0));
+        return Ok((false, false, 0, line_count));
     }
 
     let result = search_buffer(re, buf, args, effective_max);
 
     if result.had_error {
         eprintln!("resharp: {}: DFA capacity exceeded, skipping", path.display());
-        return Ok((false, true, 0));
+        return Ok((false, true, 0, line_count));
     }
 
     let match_count = result.matches.len();
     let found = match_count > 0;
 
     if args.quiet {
-        return Ok((found, false, match_count));
+        return Ok((found, false, match_count, line_count));
     }
 
     let path_str = Some(path.to_string_lossy().into_owned());
     let mut out = termcolor::StandardStream::stdout(color_choice);
     printer::write_results_with_unique(&mut out, buf, &result.matches, path_str.as_deref(), printer_opts, unique_set)?;
 
-    Ok((found, false, match_count))
+    Ok((found, false, match_count, line_count))
 }
 
 /// search a file, write results to a WriteColor buffer
+/// returns (found, had_error, match_count, line_count)
 pub fn search_file_to_writer(
     re: &resharp::Regex,
     path: &Path,
@@ -234,32 +246,33 @@ pub fn search_file_to_writer(
     printer_opts: &PrinterOpts,
     out: &mut dyn termcolor::WriteColor,
     effective_max: Option<usize>,
-) -> anyhow::Result<(bool, bool, usize)> {
+) -> anyhow::Result<(bool, bool, usize, usize)> {
     let data = read_file(path, args)?;
     let buf = data.as_ref();
+    let line_count = count_lines(buf);
 
     if !args.search_binary() && is_binary(buf) {
-        return Ok((false, false, 0));
+        return Ok((false, false, 0, line_count));
     }
 
     let result = search_buffer(re, buf, args, effective_max);
 
     if result.had_error {
         eprintln!("resharp: {}: DFA capacity exceeded, skipping", path.display());
-        return Ok((false, true, 0));
+        return Ok((false, true, 0, line_count));
     }
 
     let match_count = result.matches.len();
     let found = match_count > 0;
 
     if args.quiet {
-        return Ok((found, false, match_count));
+        return Ok((found, false, match_count, line_count));
     }
 
     let path_str = Some(path.to_string_lossy().into_owned());
     printer::write_results(out, buf, &result.matches, path_str.as_deref(), printer_opts)?;
 
-    Ok((found, false, match_count))
+    Ok((found, false, match_count, line_count))
 }
 
 /// search stdin
