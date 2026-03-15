@@ -19,9 +19,6 @@ re --scope file --and tokio --and diesel src/
 # find paragraphs that mention both password and plaintext - credential exposure
 re -p password -p plaintext .
 
-# find files using both old_api and new_api - incomplete migrations
-re --scope file --and old_api --and new_api src/
-
 # search within YAML sections for entries that have both host and port
 re --scope '---' --and host --and port config/
 
@@ -77,20 +74,17 @@ by default, all terms must appear on the same line. `-d` (delimiter/scope) widen
 | custom | `-d '<delim>'` | text between occurrences of the delimiter |
 
 ```sh
-# find text blocks that discuss both authentication and expiration
-re -p authentication -p expiration docs/
+# find text blocks that mention both "error" and "retry"
+re -p error -p retry logs/
 
-# list files that import both serde and async-trait - files bridging serialization and async
+# list files that import both serde and async-trait
 re -d file -a serde -a async-trait src/
 
-# find error and warning in the same YAML section
-re -d '---' -a error -a warn config/
+# find markdown sections discussing both API and deprecation
+re -d '\n## ' -a API -a deprecated docs/
 
 # find TODO and FIXME within 3 lines of each other - related work items
 re --near 3 -a TODO -a FIXME .
-
-# find unsafe blocks that also call transmute within 5 lines
-re --near 5 -a unsafe -a transmute src/
 ```
 
 `-p word` is shorthand for `--scope paragraph -a word`.

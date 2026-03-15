@@ -9,15 +9,15 @@ use clap::Parser;
     about = "recursive search with boolean constraints, powered by resharp",
     version,
     before_help = "\x1b[1mExamples:\x1b[0m
-  re TODO src/                            find TODO in src/
-  re -i error .                           find error, ignoring case
-  re error -a timeout src/                lines containing both error and timeout
-  re error -N debug .                     error but not debug
-  re -p error -p timeout -t rust          text blocks with both words, rust files only
-  re --near 5 -a unsafe -a unwrap src/    unsafe and unwrap within 5 lines of each other
-  re --scope file -a serde -a async -l .  list files containing both serde and async
-  re --json TODO src/                     JSON output, one object per match",
-    after_help = "resharp supports intersection (&), complement (~(...)), and _ wildcard.
+  re TODO src/                              find TODO in src/
+  re error -N debug -N trace src/           errors, filtering out debug and trace noise
+  re --near 5 -a unsafe -a unwrap src/      unsafe code that unwraps within 5 lines
+  re -d file -a tokio -a diesel src/        files using both tokio and diesel
+  re -p password -p plaintext .             paragraphs mentioning both password and plaintext
+  re -d '\\n## ' -a API -a deprecated docs/ markdown sections discussing both API and deprecation
+  re -d '---' -a host -a port config/       YAML sections with both host and port
+  re --json TODO src/                       JSON output, one object per match",
+    after_help = "all flags compile down to RE# patterns: & (intersection), ~() (complement), _ (wildcard).
 see https://github.com/ieviev/resharp for the regex engine."
 )]
 pub struct Args {
