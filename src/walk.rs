@@ -33,7 +33,9 @@ pub fn print_type_list() {
 
 pub fn walk_and_search(
     re: &resharp::Regex,
+    highlight_re: Option<&resharp::Regex>,
     pattern: &str,
+    highlight_pattern: Option<&str>,
     args: &Args,
     paths: &[PathBuf],
     printer_opts: &PrinterOpts,
@@ -42,13 +44,13 @@ pub fn walk_and_search(
     let max_filesize = args.parse_max_filesize()?;
 
     if args.sort.as_deref() == Some("path") {
-        return walk_sorted(re, args, paths, printer_opts, color_choice, max_filesize);
+        return walk_sorted(re, highlight_re, args, paths, printer_opts, color_choice, max_filesize);
     }
 
     // force sequential for --unique (needs shared dedup state)
     if args.unique {
         let walker = build_walker(args, paths, 1)?;
-        return walk_sequential(walker, re, args, printer_opts, color_choice, max_filesize);
+        return walk_sequential(walker, re, highlight_re, args, printer_opts, color_choice, max_filesize);
     }
 
     let threads = args.threads.unwrap_or(0);
@@ -59,9 +61,9 @@ pub fn walk_and_search(
     let walker = build_walker(args, paths, threads)?;
 
     if use_parallel {
-        walk_parallel(walker, pattern, args, printer_opts, color_choice, max_filesize)
+        walk_parallel(walker, pattern, highlight_pattern, args, printer_opts, color_choice, max_filesize)
     } else {
-        walk_sequential(walker, re, args, printer_opts, color_choice, max_filesize)
+        walk_sequential(walker, re, highlight_re, args, printer_opts, color_choice, max_filesize)
     }
 }
 
@@ -124,6 +126,7 @@ fn build_walker(
 fn walk_sequential(
     walker: WalkBuilder,
     re: &resharp::Regex,
+    highlight_re: Option<&resharp::Regex>,
     args: &Args,
     printer_opts: &PrinterOpts,
     color_choice: termcolor::ColorChoice,
@@ -158,7 +161,7 @@ fn walk_sequential(
 
         let (found, had_error, count, lines) =
             search::search_file(
-                re, entry.path(), args, printer_opts, color_choice,
+                re, highlight_re, entry.path(), args, printer_opts, color_choice,
                 effective_max, unique_set.as_mut(),
             )?;
 
@@ -187,6 +190,7 @@ fn walk_sequential(
 fn walk_parallel(
     walker: WalkBuilder,
     pattern: &str,
+    highlight_pattern: Option<&str>,
     args: &Args,
     printer_opts: &PrinterOpts,
     color_choice: termcolor::ColorChoice,
@@ -202,6 +206,7 @@ fn walk_parallel(
     let quiet = args.quiet;
     let max_total = args.max_total;
     let pattern = pattern.to_string();
+    let highlight_pattern = highlight_pattern.map(|s| s.to_string());
     let dfa_threshold = args.dfa_threshold;
     let dfa_capacity = args.dfa_capacity;
 
@@ -224,6 +229,13 @@ fn walk_parallel(
                 return Box::new(move |_| ignore::WalkState::Quit);
             }
         };
+        let highlight_re = highlight_pattern.as_ref().and_then(|hp| {
+            resharp::Regex::with_options(hp, resharp::EngineOptions {
+                dfa_threshold,
+                max_dfa_capacity: dfa_capacity,
+                ..Default::default()
+            }).ok()
+        });
         Box::new(move |entry| {
             if quiet && found_any.load(Ordering::Relaxed) {
                 return ignore::WalkState::Quit;
@@ -261,7 +273,7 @@ fn walk_parallel(
             });
 
             let mut buf = bufwtr.buffer();
-            match search::search_file_to_writer(&re, entry.path(), args, printer_opts, &mut buf, effective_max) {
+            match search::search_file_to_writer(&re, highlight_re.as_ref(), entry.path(), args, printer_opts, &mut buf, effective_max) {
                 Ok((found, had_error, count, lines)) => {
                     total_lines.fetch_add(lines, Ordering::Relaxed);
                     if had_error {
@@ -298,6 +310,7 @@ fn walk_parallel(
 
 fn walk_sorted(
     re: &resharp::Regex,
+    highlight_re: Option<&resharp::Regex>,
     args: &Args,
     paths: &[PathBuf],
     printer_opts: &PrinterOpts,
@@ -341,7 +354,7 @@ fn walk_sorted(
         let effective_max = compute_effective_max(args, stats.match_count);
 
         let (found, had_error, count, lines) = search::search_file(
-            re, path, args, printer_opts, color_choice,
+            re, highlight_re, path, args, printer_opts, color_choice,
             effective_max, unique_set.as_mut(),
         )?;
         stats.total_lines += lines;
@@ -547,7 +560,7 @@ pub fn collect_matching_files(
             continue;
         }
 
-        let sr = search::search_buffer(re, &data, args, None);
+        let sr = search::search_buffer(re, None, &data, args, None);
         if sr.had_error {
             eprintln!("resharp: {}: DFA capacity exceeded, skipping", entry.path().display());
             continue;

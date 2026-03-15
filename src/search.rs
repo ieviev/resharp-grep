@@ -48,6 +48,7 @@ fn line_end(buf: &[u8], line_start: usize) -> usize {
 /// search a byte buffer using find_all on the whole buffer
 pub fn search_buffer(
     re: &resharp::Regex,
+    highlight_re: Option<&resharp::Regex>,
     buf: &[u8],
     args: &Args,
     effective_max: Option<usize>,
@@ -116,6 +117,20 @@ pub fn search_buffer(
                 line_start: ls,
                 match_ranges: vec![match_range],
             });
+        }
+    }
+
+    // re-run highlight regex on each matched line for precise coloring
+    if let Some(hl) = highlight_re {
+        for lm in &mut line_matches {
+            let ls = lm.line_start;
+            let le = line_end(buf, ls);
+            let line_buf = &buf[ls..le];
+            if let Ok(hl_matches) = hl.find_all(line_buf) {
+                if !hl_matches.is_empty() {
+                    lm.match_ranges = hl_matches.iter().map(|m| (m.start, m.end)).collect();
+                }
+            }
         }
     }
 
@@ -201,6 +216,7 @@ pub fn count_lines(buf: &[u8]) -> usize {
 /// returns (found, had_error, match_count, line_count)
 pub fn search_file(
     re: &resharp::Regex,
+    highlight_re: Option<&resharp::Regex>,
     path: &Path,
     args: &Args,
     printer_opts: &PrinterOpts,
@@ -216,7 +232,7 @@ pub fn search_file(
         return Ok((false, false, 0, line_count));
     }
 
-    let result = search_buffer(re, buf, args, effective_max);
+    let result = search_buffer(re, highlight_re, buf, args, effective_max);
 
     if result.had_error {
         eprintln!("resharp: {}: DFA capacity exceeded, skipping", path.display());
@@ -241,6 +257,7 @@ pub fn search_file(
 /// returns (found, had_error, match_count, line_count)
 pub fn search_file_to_writer(
     re: &resharp::Regex,
+    highlight_re: Option<&resharp::Regex>,
     path: &Path,
     args: &Args,
     printer_opts: &PrinterOpts,
@@ -255,7 +272,7 @@ pub fn search_file_to_writer(
         return Ok((false, false, 0, line_count));
     }
 
-    let result = search_buffer(re, buf, args, effective_max);
+    let result = search_buffer(re, highlight_re, buf, args, effective_max);
 
     if result.had_error {
         eprintln!("resharp: {}: DFA capacity exceeded, skipping", path.display());
@@ -278,6 +295,7 @@ pub fn search_file_to_writer(
 /// search stdin
 pub fn search_stdin(
     re: &resharp::Regex,
+    highlight_re: Option<&resharp::Regex>,
     args: &Args,
     printer_opts: &PrinterOpts,
     color_choice: termcolor::ColorChoice,
@@ -290,7 +308,7 @@ pub fn search_stdin(
         (Some(mc), None) => Some(mc),
         (None, mt) => mt,
     };
-    let result = search_buffer(re, &buf, args, effective_max);
+    let result = search_buffer(re, highlight_re, &buf, args, effective_max);
 
     if result.had_error {
         anyhow::bail!("DFA capacity exceeded");

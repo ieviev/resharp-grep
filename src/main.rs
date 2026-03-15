@@ -86,15 +86,21 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
     }
 
     // content search mode
-    let engine_opts = resharp::EngineOptions {
+    let pattern = args.resolve_pattern()?;
+    let re = resharp::Regex::with_options(&pattern, resharp::EngineOptions {
         dfa_threshold: args.dfa_threshold,
         max_dfa_capacity: args.dfa_capacity,
         ..Default::default()
-    };
+    }).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let pattern = args.resolve_pattern()?;
-    let re = resharp::Regex::with_options(&pattern, engine_opts)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let highlight_pattern = args.resolve_highlight_pattern();
+    let highlight_re = highlight_pattern.as_ref().map(|hp| {
+        resharp::Regex::with_options(hp, resharp::EngineOptions {
+            dfa_threshold: args.dfa_threshold,
+            max_dfa_capacity: args.dfa_capacity,
+            ..Default::default()
+        }).map_err(|e| anyhow::anyhow!("{e}"))
+    }).transpose()?;
 
     if has_exec {
         let paths: Vec<_> = if args.paths.is_empty() {
@@ -121,7 +127,7 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
     let printer_opts = printer::PrinterOpts::from_args(&args);
 
     if args.paths.is_empty() && !std::io::stdin().is_terminal() {
-        let found = search::search_stdin(&re, &args, &printer_opts, color_choice)?;
+        let found = search::search_stdin(&re, highlight_re.as_ref(), &args, &printer_opts, color_choice)?;
         return Ok((found, false, None));
     }
 
@@ -138,7 +144,7 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
     }
 
     let (found, errors, mut stats) =
-        walk::walk_and_search(&re, &pattern, &args, &paths, &printer_opts, color_choice)?;
+        walk::walk_and_search(&re, highlight_re.as_ref(), &pattern, highlight_pattern.as_deref(), &args, &paths, &printer_opts, color_choice)?;
     if args.stats {
         stats.elapsed = start.elapsed();
         print_stats(&stats, false);

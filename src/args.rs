@@ -9,16 +9,15 @@ use clap::Parser;
     about = "recursive search with boolean constraints, powered by resharp",
     version,
     before_help = "\x1b[1mExamples:\x1b[0m
-  re 'TODO' src/                        search like ripgrep
-  re -i 'error' .                       case insensitive
-  re error -a timeout src/              lines with both words
-  re error -N debug .                   \"error\" without \"debug\"
-  re -p error -p timeout -t rust        paragraphs with both words
-  re '(_*error_*)&~(_*debug_*)'         regex algebra
-  re serde -a async --scope file -l src/  files with both words
-  re --json 'TODO' src/                JSON output for agents
-  re -P 5 unsafe -a unwrap src/        proximity search",
-    after_help = "resharp supports intersection (&), complement (~(...)), and universal wildcard (_).
+  re TODO src/                            find TODO in src/
+  re -i error .                           find error, ignoring case
+  re error -a timeout src/                lines containing both error and timeout
+  re error -N debug .                     error but not debug
+  re -p error -p timeout -t rust          text blocks with both words, rust files only
+  re --near 5 -a unsafe -a unwrap src/    unsafe and unwrap within 5 lines of each other
+  re --scope file -a serde -a async -l .  list files containing both serde and async
+  re --json TODO src/                     JSON output, one object per match",
+    after_help = "resharp supports intersection (&), complement (~(...)), and _ wildcard.
 see https://github.com/ieviev/resharp for the regex engine."
 )]
 pub struct Args {
@@ -239,7 +238,7 @@ pub struct Args {
     pub completions: Option<clap_complete::Shell>,
 
     /// scope for intersection (line, paragraph, file, or a boundary regex)
-    #[arg(long = "scope", value_name = "SCOPE")]
+    #[arg(short = 'd', long = "scope", value_name = "SCOPE")]
     pub scope: Option<String>,
 
     /// find patterns within N lines of each other (use with --and)
@@ -364,7 +363,7 @@ impl Args {
         // apply transformations
         let patterns: Vec<String> = patterns
             .into_iter()
-            .map(|p| self.wrap_pattern(p))
+            .map(|p| self.wrap_pattern(p, None))
             .collect();
 
         // combine with alternation
@@ -392,20 +391,70 @@ impl Args {
         Ok(combined)
     }
 
+    /// build a pattern for highlighting: alternation of all positive terms
+    /// without scope boundary or contains wrapping.
+    /// returns None when the search pattern already highlights correctly
+    /// (plain positional pattern, no constraints).
+    pub fn resolve_highlight_pattern(&self) -> Option<String> {
+        let has_constraints = !self.and.is_empty()
+            || !self.not.is_empty()
+            || self.paragraphs.as_ref().map_or(false, |v| !v.is_empty())
+            || self.fixed_strings.as_ref().map_or(false, |v| !v.is_empty())
+            || self.effective_scope() != "line";
+
+        if !has_constraints {
+            return None;
+        }
+
+        let mut terms = Vec::new();
+
+        if let Some(ref p) = self.pattern {
+            terms.push(self.wrap_pattern(p.clone(), None));
+        }
+        for p in &self.regexp {
+            terms.push(self.wrap_pattern(p.clone(), None));
+        }
+        for a in &self.and {
+            terms.push(self.wrap_pattern(a.clone(), None));
+        }
+        if let Some(ref words) = self.paragraphs {
+            for w in words {
+                terms.push(self.wrap_pattern(w.clone(), None));
+            }
+        }
+        for f in self.fixed_words() {
+            terms.push(resharp::escape(f));
+        }
+
+        if terms.is_empty() {
+            return None;
+        }
+        if terms.len() == 1 {
+            Some(terms.into_iter().next().unwrap())
+        } else {
+            Some(terms.into_iter().map(|t| format!("({t})")).collect::<Vec<_>>().join("|"))
+        }
+    }
+
     /// build pattern from -W/-p/-F words: intersect all with _*word_*, apply scope boundary
     fn build_words_pattern(&self, words: &[&str]) -> String {
+        let fixed = self.fixed_words();
+        let single = words.len() + fixed.len() == 1
+            && self.not.is_empty()
+            && self.effective_scope() == "line";
+
         let mut terms: Vec<String> = words
             .iter()
-            .map(|w| {
-                let wrapped = self.wrap_pattern(w.to_string());
-                format!("(_*{wrapped}_*)")
-            })
+            .map(|w| self.wrap_pattern(w.to_string(), if single { None } else { Some("_*") }))
             .collect();
 
         // -F adds literal string constraints (pre-escaped)
-        for f in self.fixed_words() {
-            let escaped = resharp::escape(f);
-            terms.push(format!("(_*{escaped}_*)"));
+        for f in fixed {
+            if single {
+                terms.push(resharp::escape(f));
+            } else {
+                terms.push(format!("(_*{escaped}_*)", escaped = resharp::escape(f)));
+            }
         }
 
         let mut combined = terms.join("&");
@@ -414,14 +463,14 @@ impl Args {
         if !self.not.is_empty() {
             if self.effective_scope() == "line" {
                 for n in &self.not {
-                    let term = self.wrap_pattern(n.clone());
-                    combined = format!("{combined}&~(.*{term}.*)");
+                    let term = self.wrap_pattern(n.clone(), Some(".*"));
+                    combined = format!("{combined}&~{term}");
                 }
                 combined = format!("^({combined})$");
             } else {
                 for n in &self.not {
-                    let term = self.wrap_pattern(n.clone());
-                    combined = format!("{combined}&~(_*{term}_*)");
+                    let term = self.wrap_pattern(n.clone(), Some("_*"));
+                    combined = format!("{combined}&~{term}");
                 }
             }
         }
@@ -439,23 +488,23 @@ impl Args {
         if self.effective_scope() == "line" {
             combined = format!("(.*{combined}.*)");
             for a in &self.and {
-                let term = self.wrap_pattern(a.clone());
-                combined = format!("{combined}&(.*{term}.*)");
+                let term = self.wrap_pattern(a.clone(), Some(".*"));
+                combined = format!("{combined}&{term}");
             }
             for n in &self.not {
-                let term = self.wrap_pattern(n.clone());
-                combined = format!("{combined}&~(.*{term}.*)");
+                let term = self.wrap_pattern(n.clone(), Some(".*"));
+                combined = format!("{combined}&~{term}");
             }
             combined = format!("^({combined})$");
         } else {
             combined = format!("(_*{combined}_*)");
             for a in &self.and {
-                let term = self.wrap_pattern(a.clone());
-                combined = format!("{combined}&(_*{term}_*)");
+                let term = self.wrap_pattern(a.clone(), Some("_*"));
+                combined = format!("{combined}&{term}");
             }
             for n in &self.not {
-                let term = self.wrap_pattern(n.clone());
-                combined = format!("{combined}&~(_*{term}_*)");
+                let term = self.wrap_pattern(n.clone(), Some("_*"));
+                combined = format!("{combined}&~{term}");
             }
         }
 
@@ -474,12 +523,15 @@ impl Args {
 
     fn apply_near(&self, combined: String) -> String {
         match self.near {
-            Some(n) => format!("({combined})&~((_*\n_*){{{}}})", n + 1),
+            Some(n) => format!("({combined})&~((_*\n_*){{{n}}})"),
             None => combined,
         }
     }
 
-    fn wrap_pattern(&self, mut pattern: String) -> String {
+    /// process a term: escape, apply flags, optionally surround with wildcards.
+    /// if `wild` is Some, wraps as (wild term wild) but skips the wildcard
+    /// on sides that already have a ^ or $ anchor.
+    fn wrap_pattern(&self, mut pattern: String, wild: Option<&str>) -> String {
         if self.is_fixed_strings() {
             pattern = resharp::escape(&pattern);
         } else if self.raw {
@@ -496,6 +548,12 @@ impl Args {
 
         if self.should_ignore_case(&pattern) {
             pattern = format!("(?i){pattern}");
+        }
+
+        if let Some(w) = wild {
+            let prefix = if pattern.starts_with('^') { "" } else { w };
+            let suffix = if pattern.ends_with('$') { "" } else { w };
+            pattern = format!("({prefix}{pattern}{suffix})");
         }
 
         pattern
@@ -625,7 +683,6 @@ pub fn parse() -> anyhow::Result<Args> {
     let mut args = Args::parse();
 
     // when -e/-f/-F is used or -p has words, positional PATTERN is a PATH
-    // -a is a modifier, not a pattern source, so it doesn't cause reinterpretation
     let has_words = args.paragraphs.as_ref().map_or(false, |v| !v.is_empty())
         || args.fixed_strings.as_ref().map_or(false, |v| !v.is_empty());
     if (!args.regexp.is_empty() || !args.pattern_file.is_empty() || has_words || args.files)
@@ -635,9 +692,35 @@ pub fn parse() -> anyhow::Result<Args> {
         args.paths.insert(0, PathBuf::from(pat));
     }
 
+    // -a without a base pattern: positional arg is a path, not a pattern
+    if !args.and.is_empty()
+        && args.pattern.is_some()
+        && args.regexp.is_empty()
+        && args.pattern_file.is_empty()
+        && !has_words
+    {
+        // check if the positional looks like a path
+        let pat = args.pattern.as_ref().unwrap();
+        if std::path::Path::new(pat).exists() {
+            let pat = args.pattern.take().unwrap();
+            args.paths.insert(0, PathBuf::from(pat));
+        }
+    }
+
     // --scope paragraph is equivalent to -p (without words)
     if args.scope.as_deref() == Some("paragraph") && args.paragraphs.is_none() {
         args.paragraphs = Some(Vec::new());
+    }
+
+    // --scope file implies -l unless the user asked for specific output
+    if args.scope.as_deref() == Some("file")
+        && !args.count
+        && !args.only_matching
+        && !args.files_without_match
+        && !args.quiet
+        && !args.json
+    {
+        args.files_with_matches = true;
     }
 
     Ok(args)

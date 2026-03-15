@@ -1,86 +1,133 @@
 # re
 
-a recursive grep with boolean constraints - find lines (or paragraphs, or files) matching all of your terms at once. powered by [RE#](https://github.com/ieviev/resharp).
+grep finds one thing at a time. `re` finds where multiple things appear together - on the same line, in the same paragraph, within N lines of each other, or anywhere in the same file. powered by [RE#](https://github.com/ieviev/resharp).
 
 [install](#install) | [web playground](https://ieviev.github.io/resharp-webapp/)
 
-## basic usage
+## why re
 
 ```sh
-re 'TODO' src/                                    # search like ripgrep
-re --add error --add timeout src/                  # lines with both "error" AND "timeout"
-re --add error --not debug src/                    # "error" but not "debug"
-re --lit 'std::io' --lit 'Error' src/              # same, but with literal strings
+# find unsafe code that unwraps within 5 lines - potential panics in unsafe blocks
+re --near 5 --and unsafe --and unwrap src/
+
+# find errors mentioning timeout, but filter out debug and trace noise
+re error --not debug --not trace src/
+
+# list files that use both tokio and diesel - mixed async/sync code
+re --scope file --and tokio --and diesel src/
+
+# find paragraphs that mention both password and plaintext - credential exposure
+re -p password -p plaintext .
+
+# find files using both old_api and new_api - incomplete migrations
+re --scope file --and old_api --and new_api src/
+
+# search within YAML sections for entries that have both host and port
+re --scope '---' --and host --and port config/
+
+# find markdown sections that discuss both API and deprecation
+re --scope '\n## ' --and API --and deprecated docs/
 ```
 
-## adding constraints
+with grep, each of these would require chaining multiple commands and losing file context, line numbers, and highlighting. `re` does it in one shot, and faster than any other tool out there.
 
-`-a` / `--add` requires each term to appear within the match scope (default: line).
+## quick start
 
-| flag | effect |
-|------|--------|
-| `-a` / `--add` | must contain pattern |
-| `-F` / `--lit` | must contain literal string (no regex) |
-| `-N` / `--not` | must not contain pattern |
+`re` works similar to ripgrep for simple searches:
 
+```sh
+re TODO src/                              # find TODO in src/
+re -i error .                             # case-insensitive search
+re -F 'std::io' src/                      # literal string (no regex)
+```
 
-## controlling scope
+the difference shows up when you need more than one term.
 
-by default, all constraints must be satisfied within a single line. `--scope` changes this boundary:
+## boolean constraints
 
-| scope | how to use | constraints must match within |
-|-------|-----------|-------------------------------|
+`-a` requires a term, `-N` excludes one. all terms must co-occur within the current scope (line by default).
+
+```sh
+# lines containing both "error" and "timeout"
+re -a error -a timeout src/
+
+# error but not debug - filter out noisy log lines
+re error -N debug .
+
+# lines with both literal strings (no regex interpretation)
+re -F 'std::io' -F 'Error' src/
+```
+
+| flag | effect | compiles to |
+|------|--------|-------------|
+| `-a` / `--and` | match must also contain this pattern | `&(_*pattern_*)` |
+| `-N` / `--not` | match must not contain this pattern | `&~(_*pattern_*)` |
+| `-F` / `--lit` | match must contain this literal string | `&(_*literal_*)` |
+
+## scope
+
+by default, all terms must appear on the same line. `-d` (delimiter/scope) widens the window.
+
+| scope | flag | terms must appear within |
+|-------|------|--------------------------|
 | line | (default) | a single line |
-| paragraph | `-p` or `--scope paragraph` | text blocks separated by blank lines |
-| file | `--scope file` | anywhere in the same file |
-| custom | `--scope '<pattern>'` | match must not cross the pattern |
+| paragraph | `-p` | a text block separated by blank lines |
+| file | `-d file` | anywhere in the same file (lists filenames) |
+| proximity | `--near N` | N lines of each other |
+| custom | `-d '<delim>'` | text between occurrences of the delimiter |
 
 ```sh
-re -p error -p timeout                         # paragraphs containing both words
-re --scope file --add serde --add async -l src/    # list files containing both words
-re --scope='---' --add error --add warn .      # within the same --- delimited block
+# find text blocks that discuss both authentication and expiration
+re -p authentication -p expiration docs/
+
+# list files that import both serde and async-trait - files bridging serialization and async
+re -d file -a serde -a async-trait src/
+
+# find error and warning in the same YAML section
+re -d '---' -a error -a warn config/
+
+# find TODO and FIXME within 3 lines of each other - related work items
+re --near 3 -a TODO -a FIXME .
+
+# find unsafe blocks that also call transmute within 5 lines
+re --near 5 -a unsafe -a transmute src/
 ```
 
-`-p word` is shorthand for `--scope paragraph --add word`.
-
-### proximity search
-
-`--near N` constrains all terms to appear within N lines of each other:
-
-```sh
-re --near 5 --add unsafe --add unwrap src/     # "unsafe" and "unwrap" within 5 lines
-re --near 3 --add TODO --add FIXME .           # nearby TODOs and FIXMEs
-```
+`-p word` is shorthand for `--scope paragraph -a word`.
 
 ## the RE# pattern language
 
-beyond flag-based constraints, you can write patterns directly using operators that standard regex doesn't have:
+the flags are convenient shorthands, but you can also write the whole pattern as a single positional argument using boolean operators directly:
 
 | operator | meaning | example |
 |----------|---------|---------|
-| `&` | intersection - both sides must match | `(foo)&(bar)` |
-| `~` | complement - exclude what follows | `~(_*debug_*)` |
-| `_` | wildcard - like `.` but also matches newlines | `_*error_*` |
-
-`_` is what makes multi-line and paragraph searches work. use `\_` for a literal underscore, `-R` for standard regex mode, or `-F` for fixed strings.
+| `&` | intersection - both sides must match | `(error)&(timeout)` matches lines with both |
+| `~(...)` | complement - must not match | `~(_*debug_*)` excludes lines containing debug |
+| `_` | wildcard - any character including newlines | `_*error_*` matches error anywhere in a block |
 
 ```sh
-re '([0-9a-f]+)&(_*[0-9]_*)&(_*[a-f]_*)'     # hex with both a digit and a letter
-re '([a-zA-Z_]+)&(_{8,20})&(_*config_*)'      # 8-20 char identifiers with "config"
-re '^(~(_*debug_*))$' src/                     # lines NOT containing "debug"
+# these are equivalent:
+re error -N debug .
+re '(_*error_*)&~(_*debug_*)' .
+
+# patterns that go beyond what flags can express:
+# hex strings that contain both a digit and a letter
+re '([0-9a-f]+)&(_*[0-9]_*)&(_*[a-f]_*)'
 ```
+
+use `\_` for a literal underscore, `-R` for standard regex mode, or `-F` for fixed strings.
 
 try patterns interactively in the [web playground](https://ieviev.github.io/resharp-webapp/).
 
 ## differences from ripgrep
 
-most ripgrep flags work the same. the differences:
+most ripgrep flags work the same. the key differences:
 
-| ripgrep | re | reason |
+| ripgrep | re | notes |
 |---------|-----|--------|
-| `-a` / `--text` | `-uuu` | `-a` is `--and`/`--add` in re |
-| `_` is literal | `_` is wildcard | use `-R` or `\_` for literal |
-| standard regex only | `&`, `~`, `_` operators | use `-R` for standard regex mode |
+| `-a` processes binary files | `-a` means `--and` (require term) | use `-uuu` for binary file processing |
+| `_` is a literal character | `_` is a wildcard | use `-R` or `\_` for literal underscore |
+| standard regex only | adds `&`, `~`, `_` operators | use `-R` to disable |
 
 ## exit codes
 
@@ -117,17 +164,17 @@ nix package includes shell completions.
 all flags compile down to [RE#](https://github.com/ieviev/resharp) patterns. for example:
 
 ```sh
-re --add unsafe --add unwrap --near 5
+re --near 5 -a unsafe -a unwrap
 ```
 
 compiles to:
 
 ```
-(_*unsafe_*) & (_*unwrap_*) & ~((_*\n_*){6})
+(_*unsafe_*) & (_*unwrap_*) & ~((_*\n_*){5})
 ```
 
-`--add` terms become intersections (`_*word_*`), `--near 5` rejects spans with 6+ newlines via complement (`~`), and scopes add their own boundary constraint. because everything shares the same representation, all output modes (highlighting, context, `--count`, `--json`, etc.) work uniformly.
+each `-a` term becomes an intersection, `--near 5` rejects spans containing 5+ newlines, and scopes add their own boundary. because everything shares the same pattern representation, all output modes (highlighting, context, `--count`, `--json`, etc.) work uniformly.
 
-see the [RE# engine](https://github.com/ieviev/resharp) for more on the regex algebra.
+see the [RE# engine](https://github.com/ieviev/resharp) for more on the pattern language.
 
 Have fun!
