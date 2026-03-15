@@ -275,9 +275,9 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "resharp"
-version = "0.3.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ea51ab5e229b42e2cf1f4a598f61a370178a665ac5ae1ff427b942992b5e29c"
+checksum = "b13a8e994d2fd00a35da637cd434e19ae5186106f120f8521df149320158c3b2"
 dependencies = [
  "resharp-algebra",
  "resharp-parser",
@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "resharp-grep"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bstr",
