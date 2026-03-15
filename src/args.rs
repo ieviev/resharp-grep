@@ -594,7 +594,7 @@ impl Args {
     }
 
     pub fn color_choice(&self) -> termcolor::ColorChoice {
-        if self.json {
+        if self.json || std::env::var_os("NO_COLOR").is_some() {
             return termcolor::ColorChoice::Never;
         }
         match self.color.as_str() {
