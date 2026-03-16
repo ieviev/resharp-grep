@@ -7,6 +7,7 @@ use crate::search::LineMatch;
 
 pub struct PrinterOpts {
     pub heading: bool,
+    pub show_path: bool,
     pub line_number: bool,
     pub only_matching: bool,
     pub count: bool,
@@ -31,6 +32,7 @@ impl PrinterOpts {
 
         Self {
             heading: args.show_heading(),
+            show_path: multi && !args.show_heading(),
             line_number: args.show_line_number(multi),
             only_matching: args.only_matching,
             count: args.count,
@@ -230,7 +232,7 @@ pub fn write_results_with_unique(
                 if last_scope_line != Some(scope_line) {
                     last_scope_line = Some(scope_line);
                     // print scope header
-                    if !opts.heading {
+                    if opts.show_path {
                         if let Some(p) = path {
                             out.set_color(ColorSpec::new().set_fg(Some(Color::Magenta)))?;
                             write!(out, "{p}")?;
@@ -485,7 +487,7 @@ fn print_prefix(
 ) -> anyhow::Result<()> {
     let sep = if is_context { "-" } else { ":" };
 
-    if !opts.heading {
+    if opts.show_path {
         if let Some(p) = path {
             out.set_color(ColorSpec::new().set_fg(Some(Color::Magenta)))?;
             write!(out, "{p}")?;
