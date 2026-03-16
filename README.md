@@ -89,27 +89,26 @@ re --near 3 -a TODO -a FIXME .
 
 `-p word` is shorthand for `--scope paragraph -a word`.
 
-## the RE# pattern language
+## raw patterns
 
-the flags are convenient shorthands, but you can also write the whole pattern as a single positional argument using boolean operators directly:
+the flags are convenient shorthands, but you can also write patterns directly using the [RE#](https://github.com/ieviev/resharp) operators:
 
 | operator | meaning | example |
 |----------|---------|---------|
 | `&` | intersection - both sides must match | `(error)&(timeout)` matches lines with both |
-| `~(...)` | complement - must not match | `~(_*debug_*)` excludes lines containing debug |
-| `_` | wildcard - any character including newlines | `_*error_*` matches error anywhere in a block |
+| `~(...)` | complement - must not match | `~(.*debug.*)` excludes lines containing debug |
 
 ```sh
 # these are equivalent:
 re error -N debug .
-re '(_*error_*)&~(_*debug_*)' .
+re '(.*error.*)&~(.*debug.*)' .
 
 # patterns that go beyond what flags can express:
 # hex strings that contain both a digit and a letter
-re '([0-9a-f]+)&(_*[0-9]_*)&(_*[a-f]_*)'
+re '([0-9a-f]+)&(.*[0-9].*)&(.*[a-f].*)'
 ```
 
-use `\_` for a literal underscore, `-R` for standard regex mode, or `-F` for fixed strings.
+use `-R` for standard regex mode or `-F` for fixed strings.
 
 try patterns interactively in the [web playground](https://ieviev.github.io/resharp-webapp/).
 
@@ -120,8 +119,7 @@ most ripgrep flags work the same. the key differences:
 | ripgrep | re | notes |
 |---------|-----|--------|
 | `-a` processes binary files | `-a` means `--and` (require term) | use `-uuu` for binary file processing |
-| `_` is a literal character | `_` is a wildcard | use `-R` or `\_` for literal underscore |
-| standard regex only | adds `&`, `~`, `_` operators | use `-R` to disable |
+| standard regex only | adds `&` (intersection) and `~` (complement) | use `-R` to disable |
 
 ## exit codes
 

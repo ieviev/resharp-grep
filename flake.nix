@@ -1,5 +1,5 @@
 {
-  description = "resharp - grep powered by the RE# regex engine";
+  description = "recursive grep with boolean constraints";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";

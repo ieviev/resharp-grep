@@ -20,7 +20,7 @@ rustPlatform.buildRustPackage {
   '';
 
   meta = {
-    description = "grep tool powered by the resharp regex engine with intersection, complement, and lookarounds";
+    description = "recursive grep with boolean constraints and regex intersection";
     license = lib.licenses.mit;
     mainProgram = "re";
   };

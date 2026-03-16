@@ -6,7 +6,7 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(
     name = "re",
-    about = "recursive search with boolean constraints, powered by resharp",
+    about = "recursive search with boolean constraints",
     version,
     before_help = "\x1b[1mExamples:\x1b[0m
   re TODO src/                              find TODO in src/
@@ -17,8 +17,7 @@ use clap::Parser;
   re -d '\\n## ' -a API -a deprecated docs/ markdown sections discussing both API and deprecation
   re -d '---' -a host -a port config/       YAML sections with both host and port
   re --json TODO src/                       JSON output, one object per match",
-    after_help = "all flags compile down to RE# patterns: & (intersection), ~() (complement), _ (wildcard).
-see https://github.com/ieviev/resharp for the regex engine."
+    after_help = "see https://github.com/ieviev/resharp for the pattern language."
 )]
 pub struct Args {
     /// regex pattern (positional, mutually exclusive with -e/-f)
@@ -107,7 +106,7 @@ pub struct Args {
     #[arg(short = 'F', long = "fixed-strings", aliases = ["fixed", "lit"], num_args = 0..=1, action = clap::ArgAction::Append, value_name = "STRING")]
     pub fixed_strings: Option<Vec<String>>,
 
-    /// raw regex mode (standard regex, _ is literal, no resharp algebra)
+    /// standard regex mode (disables &, ~, and _ operators)
     #[arg(short = 'R', long = "raw")]
     pub raw: bool,
 
