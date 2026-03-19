@@ -1,6 +1,6 @@
 [package]
 name = "resharp-grep"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2021"
 description = "recursive grep with boolean constraints and regex intersection"
 license = "MIT"
