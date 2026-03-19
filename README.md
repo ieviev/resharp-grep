@@ -59,7 +59,7 @@ re -F 'std::io' -F 'Error' src/
 |------|--------|-------------|
 | `-a` / `--and` | match must also contain this pattern | `&(_*pattern_*)` |
 | `-N` / `--not` | match must not contain this pattern | `&~(_*pattern_*)` |
-| `-e` | union - match any of the patterns | `(pat1)|(pat2)` |
+| `-e` | union - match any of the patterns | `(pat1)\|(pat2)` |
 | `-F` / `--lit` | match must contain this literal string | `&(_*literal_*)` |
 
 ## scope
