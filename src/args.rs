@@ -100,9 +100,7 @@ pub struct Args {
     #[arg(short = 'b', long = "byte-offset")]
     pub byte_offset: bool,
 
-    /// treat pattern as literal string
-    /// with values: add literal string constraints (repeatable)
-    /// e.g. -F lit1 -F lit2
+    /// literal string mode, or repeatable literal constraints (-F lit1 -F lit2)
     #[arg(short = 'F', long = "fixed-strings", aliases = ["fixed", "lit"], num_args = 0..=1, action = clap::ArgAction::Append, value_name = "STRING")]
     pub fixed_strings: Option<Vec<String>>,
 
@@ -210,9 +208,7 @@ pub struct Args {
     #[arg(long = "multiline")]
     pub multiline: bool,
 
-    /// constrain matches to within paragraphs
-    /// with words: find paragraphs containing all words (intersection)
-    /// e.g. -p word1 -p word2 -p word3
+    /// paragraph scope, or repeatable word intersection (-p word1 -p word2)
     #[arg(short = 'p', long = "paragraphs", alias = "§", num_args = 0..=1, action = clap::ArgAction::Append, value_name = "WORD")]
     pub paragraphs: Option<Vec<String>>,
 
@@ -268,10 +264,6 @@ pub struct Args {
     #[arg(long = "json")]
     pub json: bool,
 
-    /// delimiters for block scope (e.g., "{}")
-    #[arg(long = "delimiters", value_name = "PAIR")]
-    pub delimiters: Option<String>,
-
     /// show the enclosing function or block header for each match
     #[arg(long = "show-scope")]
     pub show_scope: bool,
@@ -279,8 +271,6 @@ pub struct Args {
 
 impl Args {
     pub fn is_fixed_strings(&self) -> bool {
-        // bare -F (no values): global fixed-strings mode
-        // -F with values: only the -F terms are literal, not a global flag
         matches!(&self.fixed_strings, Some(v) if v.is_empty())
     }
 
@@ -295,6 +285,14 @@ impl Args {
         self.paragraphs.is_some()
     }
 
+    pub fn engine_opts(&self) -> resharp::EngineOptions {
+        resharp::EngineOptions {
+            dfa_threshold: self.dfa_threshold,
+            max_dfa_capacity: self.dfa_capacity,
+            ..Default::default()
+        }
+    }
+
     pub fn effective_scope(&self) -> &str {
         if let Some(ref scope) = self.scope {
             scope.as_str()
@@ -307,8 +305,8 @@ impl Args {
         }
     }
 
-    /// resolve the final regex pattern from positional, -e, -f, -W, -F, and -p flags
-    pub fn resolve_pattern(&self) -> anyhow::Result<String> {
+    /// returns (pattern, file_scope_not_patterns)
+    pub fn resolve_pattern(&self) -> anyhow::Result<(String, Vec<String>)> {
         let para: Vec<&str> = match &self.paragraphs {
             Some(w) => w.iter().map(|s| s.as_str()).collect(),
             None => vec![],
@@ -332,7 +330,8 @@ impl Args {
             if self.near.is_some() && total_terms < 2 {
                 anyhow::bail!("--near requires at least 2 terms (use -W, --and, or & in pattern)");
             }
-            return Ok(self.build_words_pattern(&words));
+            let (pattern, file_nots) = self.build_words_pattern(&words);
+            return Ok((pattern, file_nots));
         }
 
         let mut patterns = Vec::new();
@@ -365,8 +364,8 @@ impl Args {
             .map(|p| self.wrap_pattern(p, None))
             .collect();
 
-        // combine with alternation
-        let mut combined = if patterns.len() == 1 {
+        // combine with union
+        let combined = if patterns.len() == 1 {
             patterns.into_iter().next().unwrap()
         } else {
             patterns
@@ -377,7 +376,7 @@ impl Args {
         };
 
         // apply --and / --not intersection/complement
-        combined = self.apply_and_not(combined);
+        let (combined, file_nots) = self.apply_and_not(combined);
 
         // --near requires at least 2 terms
         if self.near.is_some() && self.and.is_empty() {
@@ -385,15 +384,12 @@ impl Args {
         }
 
         // apply scope boundary
-        combined = self.apply_scope_boundary(combined);
+        let combined = self.apply_scope_boundary(combined);
 
-        Ok(combined)
+        Ok((combined, file_nots))
     }
 
-    /// build a pattern for highlighting: alternation of all positive terms
-    /// without scope boundary or contains wrapping.
-    /// returns None when the search pattern already highlights correctly
-    /// (plain positional pattern, no constraints).
+    /// alternation of positive terms for highlighting, None if unnecessary
     pub fn resolve_highlight_pattern(&self) -> Option<String> {
         let has_constraints = !self.and.is_empty()
             || !self.not.is_empty()
@@ -435,8 +431,7 @@ impl Args {
         }
     }
 
-    /// build pattern from -W/-p/-F words: intersect all with _*word_*, apply scope boundary
-    fn build_words_pattern(&self, words: &[&str]) -> String {
+    fn build_words_pattern(&self, words: &[&str]) -> (String, Vec<String>) {
         let fixed = self.fixed_words();
         let single = words.len() + fixed.len() == 1
             && self.not.is_empty()
@@ -457,57 +452,69 @@ impl Args {
         }
 
         let mut combined = terms.join("&");
+        let scope = self.effective_scope();
+        let wild = if scope == "line" { ".*" } else { "_*" };
+        let file_nots = self.apply_nots(&mut combined, scope, wild);
 
-        // --not: complement within scope
-        if !self.not.is_empty() {
-            if self.effective_scope() == "line" {
-                for n in &self.not {
-                    let term = self.wrap_pattern(n.clone(), Some(".*"));
-                    combined = format!("{combined}&~{term}");
-                }
-                combined = format!("^({combined})$");
-            } else {
-                for n in &self.not {
-                    let term = self.wrap_pattern(n.clone(), Some("_*"));
-                    combined = format!("{combined}&~{term}");
-                }
-            }
+        // line scope needs anchoring when negation complements were baked in
+        if file_nots.is_empty() && !self.not.is_empty() && scope == "line" {
+            combined = format!("^({combined})$");
         }
 
-        self.apply_scope_boundary(combined)
+        (self.apply_scope_boundary(combined), file_nots)
     }
 
-    fn apply_and_not(&self, mut combined: String) -> String {
+    fn apply_and_not(&self, mut combined: String) -> (String, Vec<String>) {
         let has_and = !self.and.is_empty();
         let has_not = !self.not.is_empty();
         if !has_and && !has_not {
-            return combined;
+            return (combined, vec![]);
         }
 
-        if self.effective_scope() == "line" {
-            combined = format!("(.*{combined}.*)");
-            for a in &self.and {
-                let term = self.wrap_pattern(a.clone(), Some(".*"));
-                combined = format!("{combined}&{term}");
-            }
-            for n in &self.not {
-                let term = self.wrap_pattern(n.clone(), Some(".*"));
-                combined = format!("{combined}&~{term}");
-            }
+        let scope = self.effective_scope();
+        let wild = if scope == "line" { ".*" } else { "_*" };
+
+        // file scope with only negations: extract as post-filters, leave pattern unchanged
+        if scope == "file" && has_not && !has_and {
+            let nots = self.not.iter()
+                .map(|n| self.wrap_pattern(n.clone(), Some(wild)))
+                .collect();
+            return (combined, nots);
+        }
+
+        combined = format!("({wild}({combined}){wild})");
+        for a in &self.and {
+            let term = self.wrap_pattern(a.clone(), Some(wild));
+            combined = format!("{combined}&{term}");
+        }
+
+        let file_nots = self.apply_nots(&mut combined, scope, wild);
+
+        if scope == "line" {
             combined = format!("^({combined})$");
-        } else {
-            combined = format!("(_*{combined}_*)");
-            for a in &self.and {
-                let term = self.wrap_pattern(a.clone(), Some("_*"));
-                combined = format!("{combined}&{term}");
-            }
-            for n in &self.not {
-                let term = self.wrap_pattern(n.clone(), Some("_*"));
-                combined = format!("{combined}&~{term}");
-            }
         }
 
-        combined
+        (combined, file_nots)
+    }
+
+    fn apply_nots(&self, combined: &mut String, scope: &str, wild: &str) -> Vec<String> {
+        if self.not.is_empty() {
+            return vec![];
+        }
+
+        let nots: Vec<String> = self.not.iter()
+            .map(|n| self.wrap_pattern(n.clone(), Some(wild)))
+            .collect();
+
+        if scope == "file" {
+            return nots;
+        }
+
+        for term in &nots {
+            *combined = format!("{combined}&~{term}");
+        }
+
+        vec![]
     }
 
     fn apply_scope_boundary(&self, combined: String) -> String {
@@ -527,9 +534,6 @@ impl Args {
         }
     }
 
-    /// process a term: escape, apply flags, optionally surround with wildcards.
-    /// if `wild` is Some, wraps as (wild term wild) but skips the wildcard
-    /// on sides that already have a ^ or $ anchor.
     fn wrap_pattern(&self, mut pattern: String, wild: Option<&str>) -> String {
         if self.is_fixed_strings() {
             pattern = resharp::escape(&pattern);
@@ -558,8 +562,6 @@ impl Args {
         pattern
     }
 
-    /// escape resharp-specific metacharacters (_ & ~) so the pattern
-    /// is treated as standard regex only
     fn escape_resharp(pattern: &str) -> String {
         let mut out = String::with_capacity(pattern.len());
         let mut chars = pattern.chars().peekable();
@@ -646,7 +648,6 @@ impl Args {
         self.before_context.or(self.context).unwrap_or(0)
     }
 
-    /// whether to use mmap for a file of the given size
     pub fn use_mmap(&self, file_size: u64) -> bool {
         if self.no_mmap {
             return false;
@@ -655,6 +656,29 @@ impl Args {
             return true;
         }
         file_size >= 1024 * 1024
+    }
+
+    pub fn resolved_paths(&self) -> anyhow::Result<Vec<PathBuf>> {
+        let paths = if self.paths.is_empty() {
+            vec![".".into()]
+        } else {
+            self.paths.clone()
+        };
+        for p in &paths {
+            if !p.exists() {
+                anyhow::bail!("{}: no such file or directory", p.display());
+            }
+        }
+        Ok(paths)
+    }
+
+    pub fn effective_max(&self, total_so_far: usize) -> Option<usize> {
+        match (self.max_count, self.max_total) {
+            (Some(mc), Some(mt)) => Some(mc.min(mt.saturating_sub(total_so_far))),
+            (Some(mc), None) => Some(mc),
+            (None, Some(mt)) => Some(mt.saturating_sub(total_so_far)),
+            (None, None) => None,
+        }
     }
 
     pub fn parse_max_filesize(&self) -> anyhow::Result<Option<u64>> {
@@ -691,14 +715,15 @@ pub fn parse() -> anyhow::Result<Args> {
         args.paths.insert(0, PathBuf::from(pat));
     }
 
-    // -a without a base pattern: positional arg is a path, not a pattern
-    if !args.and.is_empty()
+    // -a or -N without a base pattern: positional arg is a path, not a pattern
+    let only_constraints = !args.and.is_empty()
+        || (args.scope.as_deref() == Some("file") && !args.not.is_empty());
+    if only_constraints
         && args.pattern.is_some()
         && args.regexp.is_empty()
         && args.pattern_file.is_empty()
         && !has_words
     {
-        // check if the positional looks like a path
         let pat = args.pattern.as_ref().unwrap();
         if std::path::Path::new(pat).exists() {
             let pat = args.pattern.take().unwrap();
@@ -709,6 +734,18 @@ pub fn parse() -> anyhow::Result<Args> {
     // --scope paragraph is equivalent to -p (without words)
     if args.scope.as_deref() == Some("paragraph") && args.paragraphs.is_none() {
         args.paragraphs = Some(Vec::new());
+    }
+
+    // --scope file with only --not terms: invert to files-without-match
+    let has_positive = args.pattern.is_some()
+        || !args.regexp.is_empty()
+        || !args.pattern_file.is_empty()
+        || !args.and.is_empty()
+        || args.paragraphs.as_ref().map_or(false, |v| !v.is_empty())
+        || args.fixed_strings.as_ref().map_or(false, |v| !v.is_empty());
+    if args.scope.as_deref() == Some("file") && !args.not.is_empty() && !has_positive {
+        args.regexp = std::mem::take(&mut args.not);
+        args.files_without_match = true;
     }
 
     // --scope file implies -l unless the user asked for specific output

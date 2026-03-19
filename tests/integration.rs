@@ -1498,6 +1498,132 @@ fn null_files_without_match() {
 }
 
 #[test]
+fn e_flag_union() {
+    let (out, code) = run_stdin(&["-e", "foo", "-e", "bar", "--no-line-number", "--color", "never"], "foo\nbar\nbaz\n");
+    assert_eq!(code, 0);
+    assert_eq!(out, "foo\nbar");
+}
+
+#[test]
+fn e_flag_union_with_and() {
+    let (out, code) = run_stdin(
+        &["-e", "foo", "-e", "bar", "-a", "x", "--no-line-number", "--color", "never"],
+        "foo x\nbar x\nfoo y\nbaz x\n",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(out, "foo x\nbar x");
+}
+
+#[test]
+fn e_flag_union_with_and_paragraph() {
+    let (out, code) = run_stdin(
+        &["-e", "foo", "-e", "bar", "-a", "x", "-p", "--no-line-number", "--color", "never"],
+        "foo\nx\n\nbar\nx\n\nfoo\ny\n",
+    );
+    assert_eq!(code, 0);
+    assert!(out.contains("foo"));
+    assert!(out.contains("bar"));
+    assert!(!out.contains("y"));
+}
+
+#[test]
+fn e_flag_union_with_and_file_scope() {
+    let td = TestDir::new();
+    td.write("a.txt", "foo\nx\n");
+    td.write("b.txt", "bar\nx\n");
+    td.write("c.txt", "foo\ny\n");
+    let (out, code) = run_args(&[
+        "-e", "foo", "-e", "bar", "-a", "x", "-d", "file",
+        "--sort", "path", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("a.txt"));
+    assert!(out.contains("b.txt"));
+    assert!(!out.contains("c.txt"));
+}
+
+#[test]
+fn e_flag_union_with_not() {
+    let (out, code) = run_stdin(
+        &["-e", "foo", "-e", "bar", "-N", "x", "--no-line-number", "--color", "never"],
+        "foo x\nbar x\nfoo y\nbar z\nbaz\n",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(out, "foo y\nbar z");
+}
+
+#[test]
+fn file_scope_negation_only() {
+    let td = TestDir::new();
+    td.write("a.txt", "foo\nhello\n");
+    td.write("b.txt", "bar\nworld\n");
+    td.write("c.txt", "foo\nbar\n");
+    td.write("d.txt", "hello\nworld\n");
+    let (out, code) = run_args(&[
+        "-d", "file", "-N", "foo", "--sort", "path", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("b.txt"));
+    assert!(out.contains("d.txt"));
+    assert!(!out.contains("a.txt"));
+    assert!(!out.contains("c.txt"));
+}
+
+#[test]
+fn file_scope_negation_only_implicit_cwd() {
+    let td = TestDir::new();
+    td.write("a.txt", "foo\nhello\n");
+    td.write("b.txt", "bar\nworld\n");
+    let mut cmd = resharp();
+    cmd.current_dir(td.path());
+    cmd.stdin(std::process::Stdio::null());
+    cmd.args(&["-d", "file", "-N", "foo", "--sort", "path", "--color", "never"]);
+    let out = cmd.output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
+    assert!(out.status.success(), "should succeed, got code={} stderr={}", out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("b.txt"));
+    assert!(!stdout.contains("a.txt"));
+}
+
+#[test]
+fn file_scope_multiple_negations() {
+    let td = TestDir::new();
+    td.write("a.txt", "foo\nhello\n");
+    td.write("b.txt", "bar\nworld\n");
+    td.write("c.txt", "foo\nbar\n");
+    td.write("d.txt", "hello\nworld\n");
+    let (out, code) = run_args(&[
+        "-d", "file", "-N", "foo", "-N", "bar", "--sort", "path", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("d.txt"));
+    assert!(!out.contains("a.txt"));
+    assert!(!out.contains("b.txt"));
+    assert!(!out.contains("c.txt"));
+}
+
+#[test]
+fn file_scope_positive_and_negation() {
+    let td = TestDir::new();
+    td.write("a.txt", "foo\nhello\n");
+    td.write("b.txt", "bar\nworld\n");
+    td.write("c.txt", "foo\nbar\n");
+    td.write("d.txt", "hello\nworld\n");
+    let (out, code) = run_args(&[
+        "-d", "file", "-a", "foo", "-N", "bar", "--sort", "path", "--color", "never",
+        td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("a.txt"));
+    assert!(!out.contains("b.txt"));
+    assert!(!out.contains("c.txt"));
+    assert!(!out.contains("d.txt"));
+}
+
+#[test]
 fn null_not_set_by_default() {
     let td = TestDir::new();
     td.write("a.txt", "hello\n");

@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 use crate::args::Args;
-use crate::search::LineMatch;
+use crate::search::{self, LineMatch};
 
 pub struct PrinterOpts {
     pub heading: bool,
@@ -82,10 +82,9 @@ pub fn print_results(
     color_choice: ColorChoice,
 ) -> anyhow::Result<()> {
     let mut out = StandardStream::stdout(color_choice);
-    write_results(&mut out, buf, matches, path, opts)
+    write_results_with_unique(&mut out, buf, matches, path, opts, None)
 }
 
-/// thread-local unique set for dedup (caller manages lifetime)
 pub struct UniqueSet {
     seen: HashSet<Vec<u8>>,
 }
@@ -105,16 +104,6 @@ impl UniqueSet {
     }
 }
 
-pub fn write_results(
-    out: &mut dyn WriteColor,
-    buf: &[u8],
-    matches: &[LineMatch],
-    path: Option<&str>,
-    opts: &PrinterOpts,
-) -> anyhow::Result<()> {
-    write_results_with_unique(out, buf, matches, path, opts, None)
-}
-
 pub fn write_results_with_unique(
     mut out: &mut dyn WriteColor,
     buf: &[u8],
@@ -123,7 +112,6 @@ pub fn write_results_with_unique(
     opts: &PrinterOpts,
     unique_set: Option<&mut UniqueSet>,
 ) -> anyhow::Result<()> {
-    // create local unique set if needed but none provided
     let mut local_set = if opts.unique && unique_set.is_none() {
         Some(UniqueSet::new())
     } else {
@@ -138,23 +126,11 @@ pub fn write_results_with_unique(
         return write_json_results(out, buf, matches, path, opts, unique_set);
     }
 
-    // files-without-match mode
-    if opts.files_without_match {
-        if matches.is_empty() {
-            if let Some(p) = path {
-                if opts.null {
-                    write!(out, "{p}\0")?;
-                } else {
-                    writeln!(out, "{p}")?;
-                }
-            }
-        }
-        return Ok(());
-    }
-
-    // files-with-matches mode
-    if opts.files_with_matches {
-        if !matches.is_empty() {
+    // files-with-matches / files-without-match mode
+    let print_file = (opts.files_without_match && matches.is_empty())
+        || (opts.files_with_matches && !matches.is_empty());
+    if opts.files_without_match || opts.files_with_matches {
+        if print_file {
             if let Some(p) = path {
                 if opts.null {
                     write!(out, "{p}\0")?;
@@ -197,8 +173,7 @@ pub fn write_results_with_unique(
         }
     }
 
-    // build full line index for context and show-scope
-    let line_starts = build_line_starts(buf);
+    let line_starts = search::build_line_index(buf);
     let total_lines = line_starts.len();
     let has_context = opts.before_ctx > 0 || opts.after_ctx > 0;
 
@@ -206,11 +181,9 @@ pub fn write_results_with_unique(
         matches.iter().map(|m| m.line_number).collect();
     let mut last_printed_line: Option<usize> = None;
 
-    // show-scope: track last printed scope to avoid repeating
     let mut last_scope_line: Option<usize> = None;
 
     for lm in matches {
-        // unique check
         if opts.unique {
             let line = get_line(buf, &line_starts, lm.line_number);
             let key = if opts.only_matching && !lm.match_ranges.is_empty() {
@@ -226,12 +199,10 @@ pub fn write_results_with_unique(
             }
         }
 
-        // show-scope: print enclosing scope marker
         if opts.show_scope {
             if let Some((scope_line, scope_text)) = find_enclosing_scope(buf, &line_starts, lm.line_number) {
                 if last_scope_line != Some(scope_line) {
                     last_scope_line = Some(scope_line);
-                    // print scope header
                     if opts.show_path {
                         if let Some(p) = path {
                             out.set_color(ColorSpec::new().set_fg(Some(Color::Magenta)))?;
@@ -253,7 +224,6 @@ pub fn write_results_with_unique(
         let ctx_start = lm.line_number.saturating_sub(opts.before_ctx);
         let ctx_end = (lm.line_number + opts.after_ctx).min(total_lines.saturating_sub(1));
 
-        // separator between non-adjacent groups
         if has_context {
             if let Some(last) = last_printed_line {
                 if ctx_start > last + 1 {
@@ -263,7 +233,6 @@ pub fn write_results_with_unique(
         }
 
         if has_context {
-            // print before-context
             for line_idx in ctx_start..lm.line_number {
                 if last_printed_line.map_or(true, |l| line_idx > l) {
                     print_context_line(
@@ -274,7 +243,6 @@ pub fn write_results_with_unique(
             }
         }
 
-        // print the match line
         if opts.only_matching {
             let line = get_line(buf, &line_starts, lm.line_number);
             for &(ms, me) in &lm.match_ranges {
@@ -294,7 +262,6 @@ pub fn write_results_with_unique(
         last_printed_line = Some(lm.line_number);
 
         if has_context {
-            // print after-context, skipping lines that are match lines
             for line_idx in (lm.line_number + 1)..=ctx_end {
                 if !match_lines.contains(&line_idx) {
                     print_context_line(
@@ -349,7 +316,7 @@ fn write_json_results(
         return Ok(());
     }
 
-    let line_starts = build_line_starts(buf);
+    let line_starts = search::build_line_index(buf);
 
     for lm in matches {
         let line = get_line(buf, &line_starts, lm.line_number);
@@ -405,16 +372,6 @@ fn write_json_results(
     Ok(())
 }
 
-fn build_line_starts(buf: &[u8]) -> Vec<usize> {
-    let mut starts = vec![0];
-    for (i, &b) in buf.iter().enumerate() {
-        if b == b'\n' && i + 1 < buf.len() {
-            starts.push(i + 1);
-        }
-    }
-    starts
-}
-
 fn get_line<'a>(buf: &'a [u8], line_starts: &[usize], line_idx: usize) -> &'a [u8] {
     let start = line_starts[line_idx];
     let end = if line_idx + 1 < line_starts.len() {
@@ -423,7 +380,6 @@ fn get_line<'a>(buf: &'a [u8], line_starts: &[usize], line_idx: usize) -> &'a [u
         buf.len()
     };
     let line = &buf[start..end];
-    // strip trailing \n / \r\n
     if line.ends_with(b"\r\n") {
         &line[..line.len() - 2]
     } else if line.ends_with(b"\n") {
@@ -444,7 +400,6 @@ fn find_enclosing_scope(buf: &[u8], line_starts: &[usize], match_line: usize) ->
     for line_idx in (0..match_line).rev() {
         let line = get_line(buf, line_starts, line_idx);
 
-        // skip blank lines
         if line.iter().all(|&b| b == b' ' || b == b'\t' || b == b'\r') {
             continue;
         }
@@ -533,13 +488,11 @@ fn print_match_line(
     let line = get_line(buf, line_starts, lm.line_number);
 
     if lm.match_ranges.is_empty() {
-        // inverted match, no highlights
         out.write_all(line)?;
         writeln!(out)?;
         return Ok(());
     }
 
-    // print line with highlighted matches (or replacements)
     let mut pos = 0;
     for &(ms, me) in &lm.match_ranges {
         let ms = ms.min(line.len());

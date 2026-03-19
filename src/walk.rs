@@ -36,34 +36,28 @@ pub fn walk_and_search(
     highlight_re: Option<&resharp::Regex>,
     pattern: &str,
     highlight_pattern: Option<&str>,
+    not_patterns: &[String],
     args: &Args,
     paths: &[PathBuf],
     printer_opts: &PrinterOpts,
     color_choice: termcolor::ColorChoice,
 ) -> anyhow::Result<(bool, bool, Stats)> {
     let max_filesize = args.parse_max_filesize()?;
+    let sorted = args.sort.as_deref() == Some("path");
 
-    if args.sort.as_deref() == Some("path") {
-        return walk_sorted(re, highlight_re, args, paths, printer_opts, color_choice, max_filesize);
-    }
-
-    // force sequential for --unique (needs shared dedup state)
-    if args.unique {
-        let walker = build_walker(args, paths, 1)?;
-        return walk_sequential(walker, re, highlight_re, args, printer_opts, color_choice, max_filesize);
-    }
-
-    let threads = args.threads.unwrap_or(0);
-    let use_parallel = match args.threads {
+    let use_parallel = !sorted && !args.unique && match args.threads {
         Some(n) => n > 1,
         None => std::thread::available_parallelism().map_or(false, |n| n.get() > 1),
     };
-    let walker = build_walker(args, paths, threads)?;
 
     if use_parallel {
-        walk_parallel(walker, pattern, highlight_pattern, args, printer_opts, color_choice, max_filesize)
+        let threads = args.threads.unwrap_or(0);
+        let walker = build_walker(args, paths, threads)?;
+        walk_parallel(walker, pattern, highlight_pattern, not_patterns, args, printer_opts, color_choice, max_filesize)
     } else {
-        walk_sequential(walker, re, highlight_re, args, printer_opts, color_choice, max_filesize)
+        let not_res = compile_not_patterns(not_patterns, args)?;
+        let walker = build_walker(args, paths, 1)?;
+        walk_sequential(walker, sorted, re, highlight_re, &not_res, args, printer_opts, color_choice, max_filesize)
     }
 }
 
@@ -123,53 +117,44 @@ fn build_walker(
     Ok(builder)
 }
 
+fn compile_not_patterns(not_patterns: &[String], args: &Args) -> anyhow::Result<Vec<resharp::Regex>> {
+    not_patterns.iter()
+        .map(|p| resharp::Regex::with_options(p, args.engine_opts())
+            .map_err(|e| anyhow::anyhow!("{e}")))
+        .collect()
+}
+
 fn walk_sequential(
     walker: WalkBuilder,
+    sorted: bool,
     re: &resharp::Regex,
     highlight_re: Option<&resharp::Regex>,
+    not_res: &[resharp::Regex],
     args: &Args,
     printer_opts: &PrinterOpts,
     color_choice: termcolor::ColorChoice,
     max_filesize: Option<u64>,
 ) -> anyhow::Result<(bool, bool, Stats)> {
+    let mut entries: Vec<PathBuf> = walk_entries(&walker, max_filesize);
+    if sorted { entries.sort(); }
+
     let mut found_any = false;
     let mut had_errors = false;
     let mut stats = Stats::default();
     let mut unique_set = if args.unique { Some(printer::UniqueSet::new()) } else { None };
 
-    for entry in walker.build() {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(err) => {
-                eprintln!("resharp: {err}");
-                continue;
-            }
-        };
-
-        if !entry.file_type().map_or(false, |ft| ft.is_file()) {
-            continue;
-        }
-
-        if let Some(max) = max_filesize {
-            if entry.metadata().map_or(false, |m| m.len() > max) {
-                continue;
-            }
-        }
-
+    for path in &entries {
         stats.files_searched += 1;
-        let effective_max = compute_effective_max(args, stats.match_count);
+        let effective_max = args.effective_max(stats.match_count);
 
-        let (found, had_error, count, lines) =
-            search::search_file(
-                re, highlight_re, entry.path(), args, printer_opts, color_choice,
-                effective_max, unique_set.as_mut(),
-            )?;
+        let mut out = termcolor::StandardStream::stdout(color_choice);
+        let (found, had_error, count, lines) = search::search_file_to_writer(
+            re, highlight_re, not_res, path, args, printer_opts, &mut out,
+            effective_max, unique_set.as_mut(),
+        )?;
 
         stats.total_lines += lines;
-
-        if had_error {
-            had_errors = true;
-        }
+        if had_error { had_errors = true; }
         if found {
             found_any = true;
             stats.files_matched += 1;
@@ -187,10 +172,25 @@ fn walk_sequential(
     Ok((found_any, had_errors, stats))
 }
 
+fn walk_entries(walker: &WalkBuilder, max_filesize: Option<u64>) -> Vec<PathBuf> {
+    walker.build().filter_map(|entry| {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(err) => { eprintln!("resharp: {err}"); return None; }
+        };
+        if !entry.file_type().map_or(false, |ft| ft.is_file()) { return None; }
+        if let Some(max) = max_filesize {
+            if entry.metadata().map_or(false, |m| m.len() > max) { return None; }
+        }
+        Some(entry.into_path())
+    }).collect()
+}
+
 fn walk_parallel(
     walker: WalkBuilder,
     pattern: &str,
     highlight_pattern: Option<&str>,
+    not_patterns: &[String],
     args: &Args,
     printer_opts: &PrinterOpts,
     color_choice: termcolor::ColorChoice,
@@ -207,8 +207,7 @@ fn walk_parallel(
     let max_total = args.max_total;
     let pattern = pattern.to_string();
     let highlight_pattern = highlight_pattern.map(|s| s.to_string());
-    let dfa_threshold = args.dfa_threshold;
-    let dfa_capacity = args.dfa_capacity;
+    let not_patterns: Vec<String> = not_patterns.to_vec();
 
     walker.build_parallel().run(|| {
         let found_any = Arc::clone(&found_any);
@@ -218,11 +217,7 @@ fn walk_parallel(
         let files_matched = Arc::clone(&files_matched);
         let total_lines = Arc::clone(&total_lines);
         let bufwtr = Arc::clone(&bufwtr);
-        let re = match resharp::Regex::with_options(&pattern, resharp::EngineOptions {
-            dfa_threshold,
-            max_dfa_capacity: dfa_capacity,
-            ..Default::default()
-        }) {
+        let re = match resharp::Regex::with_options(&pattern, args.engine_opts()) {
             Ok(re) => re,
             Err(e) => {
                 eprintln!("resharp: failed to compile pattern: {e}");
@@ -230,12 +225,17 @@ fn walk_parallel(
             }
         };
         let highlight_re = highlight_pattern.as_ref().and_then(|hp| {
-            resharp::Regex::with_options(hp, resharp::EngineOptions {
-                dfa_threshold,
-                max_dfa_capacity: dfa_capacity,
-                ..Default::default()
-            }).ok()
+            resharp::Regex::with_options(hp, args.engine_opts()).ok()
         });
+        let not_res: Vec<resharp::Regex> = match not_patterns.iter()
+            .map(|p| resharp::Regex::with_options(p, args.engine_opts()))
+            .collect::<Result<Vec<_>, _>>() {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("resharp: failed to compile --not pattern: {e}");
+                    return Box::new(move |_| ignore::WalkState::Quit);
+                }
+            };
         Box::new(move |entry| {
             if quiet && found_any.load(Ordering::Relaxed) {
                 return ignore::WalkState::Quit;
@@ -267,13 +267,10 @@ fn walk_parallel(
 
             files_searched.fetch_add(1, Ordering::Relaxed);
 
-            let effective_max = max_total.map(|mt| {
-                let current = total_matches.load(Ordering::Relaxed);
-                mt.saturating_sub(current)
-            });
+            let effective_max = args.effective_max(total_matches.load(Ordering::Relaxed));
 
             let mut buf = bufwtr.buffer();
-            match search::search_file_to_writer(&re, highlight_re.as_ref(), entry.path(), args, printer_opts, &mut buf, effective_max) {
+            match search::search_file_to_writer(&re, highlight_re.as_ref(), &not_res, entry.path(), args, printer_opts, &mut buf, effective_max, None) {
                 Ok((found, had_error, count, lines)) => {
                     total_lines.fetch_add(lines, Ordering::Relaxed);
                     if had_error {
@@ -306,76 +303,6 @@ fn walk_parallel(
     };
 
     Ok((found_any.load(Ordering::Relaxed), had_errors.load(Ordering::Relaxed), stats))
-}
-
-fn walk_sorted(
-    re: &resharp::Regex,
-    highlight_re: Option<&resharp::Regex>,
-    args: &Args,
-    paths: &[PathBuf],
-    printer_opts: &PrinterOpts,
-    color_choice: termcolor::ColorChoice,
-    max_filesize: Option<u64>,
-) -> anyhow::Result<(bool, bool, Stats)> {
-    let walker = build_walker(args, paths, 1)?;
-    let mut entries: Vec<PathBuf> = Vec::new();
-
-    for entry in walker.build() {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(err) => {
-                eprintln!("resharp: {err}");
-                continue;
-            }
-        };
-
-        if !entry.file_type().map_or(false, |ft| ft.is_file()) {
-            continue;
-        }
-
-        if let Some(max) = max_filesize {
-            if entry.metadata().map_or(false, |m| m.len() > max) {
-                continue;
-            }
-        }
-
-        entries.push(entry.into_path());
-    }
-
-    entries.sort();
-
-    let mut found_any = false;
-    let mut had_errors = false;
-    let mut stats = Stats::default();
-    let mut unique_set = if args.unique { Some(printer::UniqueSet::new()) } else { None };
-
-    for path in &entries {
-        stats.files_searched += 1;
-        let effective_max = compute_effective_max(args, stats.match_count);
-
-        let (found, had_error, count, lines) = search::search_file(
-            re, highlight_re, path, args, printer_opts, color_choice,
-            effective_max, unique_set.as_mut(),
-        )?;
-        stats.total_lines += lines;
-        if had_error {
-            had_errors = true;
-        }
-        if found {
-            found_any = true;
-            stats.files_matched += 1;
-            if args.quiet {
-                return Ok((true, had_errors, stats));
-            }
-        }
-
-        stats.match_count += count;
-        if args.max_total.map_or(false, |mt| stats.match_count >= mt) {
-            break;
-        }
-    }
-
-    Ok((found_any, had_errors, stats))
 }
 
 pub fn walk_list_files(
@@ -456,16 +383,6 @@ fn print_file_path(bufwtr: &BufferWriter, path: &std::path::Path, null: bool) ->
     Ok(())
 }
 
-fn compute_effective_max(args: &Args, total_so_far: usize) -> Option<usize> {
-    match (args.max_count, args.max_total) {
-        (Some(mc), Some(mt)) => Some(mc.min(mt.saturating_sub(total_so_far))),
-        (Some(mc), None) => Some(mc),
-        (None, Some(mt)) => Some(mt.saturating_sub(total_so_far)),
-        (None, None) => None,
-    }
-}
-
-/// collect file paths matching globs/types (for --files --exec)
 pub fn collect_files(
     args: &Args,
     paths: &[PathBuf],
@@ -512,9 +429,9 @@ pub fn collect_files(
     Ok((result, stats))
 }
 
-/// collect files where pattern matches (for search --exec)
 pub fn collect_matching_files(
     re: &resharp::Regex,
+    not_res: &[resharp::Regex],
     args: &Args,
     paths: &[PathBuf],
 ) -> anyhow::Result<(Vec<PathBuf>, Stats)> {
@@ -554,15 +471,17 @@ pub fn collect_matching_files(
 
         stats.total_lines += search::count_lines(&data);
 
-        if !args.search_binary() && data.len().min(8192) > 0
-            && memchr::memchr(0, &data[..data.len().min(8192)]).is_some()
-        {
+        if !args.search_binary() && search::is_binary(&data) {
             continue;
         }
 
         let sr = search::search_buffer(re, None, &data, args, None);
         if sr.had_error {
             eprintln!("resharp: {}: DFA capacity exceeded, skipping", entry.path().display());
+            continue;
+        }
+
+        if !sr.matches.is_empty() && search::any_not_matches(not_res, &data) {
             continue;
         }
 
@@ -581,7 +500,6 @@ pub fn collect_matching_files(
     Ok((result, stats))
 }
 
-/// run a command template on each file via sh -c, replacing {} with escaped path
 pub fn exec_on_files(
     template: &str,
     files: &[PathBuf],

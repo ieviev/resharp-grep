@@ -4,21 +4,18 @@ use std::path::Path;
 use crate::args::Args;
 use crate::printer::{self, PrinterOpts};
 
-/// a single line match with metadata
 pub struct LineMatch {
     pub line_number: usize,
     pub line_start: usize,
     pub match_ranges: Vec<(usize, usize)>,
 }
 
-/// search result for a single file
 pub struct SearchResult {
     pub matches: Vec<LineMatch>,
     pub had_error: bool,
 }
 
-/// build line index: byte offset of each line start
-fn build_line_index(buf: &[u8]) -> Vec<usize> {
+pub fn build_line_index(buf: &[u8]) -> Vec<usize> {
     let mut starts = vec![0];
     for (i, &b) in buf.iter().enumerate() {
         if b == b'\n' && i + 1 < buf.len() {
@@ -28,7 +25,6 @@ fn build_line_index(buf: &[u8]) -> Vec<usize> {
     starts
 }
 
-/// find which line a byte offset falls in (binary search)
 fn offset_to_line(line_starts: &[usize], offset: usize) -> usize {
     match line_starts.binary_search(&offset) {
         Ok(i) => i,
@@ -36,7 +32,6 @@ fn offset_to_line(line_starts: &[usize], offset: usize) -> usize {
     }
 }
 
-/// find the end of a line (position of \n or end of buffer)
 fn line_end(buf: &[u8], line_start: usize) -> usize {
     let rest = &buf[line_start..];
     match memchr::memchr(b'\n', rest) {
@@ -45,7 +40,10 @@ fn line_end(buf: &[u8], line_start: usize) -> usize {
     }
 }
 
-/// search a byte buffer using find_all on the whole buffer
+pub fn any_not_matches(not_res: &[resharp::Regex], buf: &[u8]) -> bool {
+    not_res.iter().any(|re| re.is_match(buf).unwrap_or(false))
+}
+
 pub fn search_buffer(
     re: &resharp::Regex,
     highlight_re: Option<&resharp::Regex>,
@@ -62,12 +60,6 @@ pub fn search_buffer(
 
     let all_matches = match re.find_all(buf) {
         Ok(m) => m,
-        Err(resharp::Error::CapacityExceeded) => {
-            return SearchResult {
-                matches: vec![],
-                had_error: true,
-            };
-        }
         Err(_) => {
             return SearchResult {
                 matches: vec![],
@@ -90,13 +82,11 @@ pub fn search_buffer(
             start_line
         };
 
-        // emit each line spanned by this match
         for line_idx in start_line..=end_line {
             let ls = line_starts[line_idx];
             let le = line_end(buf, ls);
             let line_len = le - ls;
 
-            // compute match range relative to this line
             let rel_start = if line_idx == start_line { m.start - ls } else { 0 };
             let rel_end = if line_idx == end_line {
                 (m.end - ls).min(line_len)
@@ -120,7 +110,6 @@ pub fn search_buffer(
         }
     }
 
-    // re-run highlight regex on each matched line for precise coloring
     if let Some(hl) = highlight_re {
         for lm in &mut line_matches {
             let ls = lm.line_start;
@@ -164,7 +153,6 @@ pub fn search_buffer(
     }
 }
 
-/// read file contents, using mmap for large files
 fn read_file(path: &Path, args: &Args) -> anyhow::Result<FileData> {
     let file = std::fs::File::open(path)?;
     let metadata = file.metadata()?;
@@ -197,13 +185,11 @@ impl AsRef<[u8]> for FileData {
     }
 }
 
-/// detect binary files by checking for NUL bytes in the first 8KB
-fn is_binary(buf: &[u8]) -> bool {
+pub fn is_binary(buf: &[u8]) -> bool {
     let check_len = buf.len().min(8192);
     memchr::memchr(0, &buf[..check_len]).is_some()
 }
 
-/// count lines in a buffer
 pub fn count_lines(buf: &[u8]) -> usize {
     if buf.is_empty() {
         return 0;
@@ -212,15 +198,14 @@ pub fn count_lines(buf: &[u8]) -> usize {
     if buf.last() == Some(&b'\n') { newlines } else { newlines + 1 }
 }
 
-/// search a file, print results to stdout
-/// returns (found, had_error, match_count, line_count)
-pub fn search_file(
+pub fn search_file_to_writer(
     re: &resharp::Regex,
     highlight_re: Option<&resharp::Regex>,
+    not_res: &[resharp::Regex],
     path: &Path,
     args: &Args,
     printer_opts: &PrinterOpts,
-    color_choice: termcolor::ColorChoice,
+    out: &mut dyn termcolor::WriteColor,
     effective_max: Option<usize>,
     unique_set: Option<&mut printer::UniqueSet>,
 ) -> anyhow::Result<(bool, bool, usize, usize)> {
@@ -239,46 +224,10 @@ pub fn search_file(
         return Ok((false, true, 0, line_count));
     }
 
-    let match_count = result.matches.len();
-    let found = match_count > 0;
-
-    if args.quiet {
-        return Ok((found, false, match_count, line_count));
-    }
-
-    let path_str = Some(path.to_string_lossy().into_owned());
-    let mut out = termcolor::StandardStream::stdout(color_choice);
-    printer::write_results_with_unique(&mut out, buf, &result.matches, path_str.as_deref(), printer_opts, unique_set)?;
-
-    Ok((found, false, match_count, line_count))
-}
-
-/// search a file, write results to a WriteColor buffer
-/// returns (found, had_error, match_count, line_count)
-pub fn search_file_to_writer(
-    re: &resharp::Regex,
-    highlight_re: Option<&resharp::Regex>,
-    path: &Path,
-    args: &Args,
-    printer_opts: &PrinterOpts,
-    out: &mut dyn termcolor::WriteColor,
-    effective_max: Option<usize>,
-) -> anyhow::Result<(bool, bool, usize, usize)> {
-    let data = read_file(path, args)?;
-    let buf = data.as_ref();
-    let line_count = count_lines(buf);
-
-    if !args.search_binary() && is_binary(buf) {
+    if !result.matches.is_empty() && any_not_matches(not_res, buf) {
         return Ok((false, false, 0, line_count));
     }
 
-    let result = search_buffer(re, highlight_re, buf, args, effective_max);
-
-    if result.had_error {
-        eprintln!("resharp: {}: DFA capacity exceeded, skipping", path.display());
-        return Ok((false, true, 0, line_count));
-    }
-
     let match_count = result.matches.len();
     let found = match_count > 0;
 
@@ -287,15 +236,15 @@ pub fn search_file_to_writer(
     }
 
     let path_str = Some(path.to_string_lossy().into_owned());
-    printer::write_results(out, buf, &result.matches, path_str.as_deref(), printer_opts)?;
+    printer::write_results_with_unique(out, buf, &result.matches, path_str.as_deref(), printer_opts, unique_set)?;
 
     Ok((found, false, match_count, line_count))
 }
 
-/// search stdin
 pub fn search_stdin(
     re: &resharp::Regex,
     highlight_re: Option<&resharp::Regex>,
+    not_res: &[resharp::Regex],
     args: &Args,
     printer_opts: &PrinterOpts,
     color_choice: termcolor::ColorChoice,
@@ -303,15 +252,14 @@ pub fn search_stdin(
     let mut buf = Vec::new();
     std::io::stdin().read_to_end(&mut buf)?;
 
-    let effective_max = match (args.max_count, args.max_total) {
-        (Some(mc), Some(mt)) => Some(mc.min(mt)),
-        (Some(mc), None) => Some(mc),
-        (None, mt) => mt,
-    };
-    let result = search_buffer(re, highlight_re, &buf, args, effective_max);
+    let result = search_buffer(re, highlight_re, &buf, args, args.effective_max(0));
 
     if result.had_error {
         anyhow::bail!("DFA capacity exceeded");
+    }
+
+    if !result.matches.is_empty() && any_not_matches(not_res, &buf) {
+        return Ok(false);
     }
 
     let found = !result.matches.is_empty();
