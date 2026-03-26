@@ -23,7 +23,7 @@ clap_complete = "4"
 ignore = "0.4"
 memchr = "2"
 memmap2 = "0.9"
-resharp = "0.3.5"
+resharp = "0.3.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 termcolor = "1"

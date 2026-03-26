@@ -16,3 +16,4 @@ ls -lh dist/
 gh release create "$tag" "${binaries[@]}" \
     --title "$tag" \
     --generate-notes
+
