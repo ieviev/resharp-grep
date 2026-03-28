@@ -45,7 +45,7 @@ pub fn walk_and_search(
     let max_filesize = args.parse_max_filesize()?;
     let sorted = args.sort.as_deref() == Some("path");
 
-    let use_parallel = !sorted && !args.unique && match args.threads {
+    let use_parallel = !sorted && !args.unique && args.head.is_none() && args.offset.is_none() && match args.threads {
         Some(n) => n > 1,
         None => std::thread::available_parallelism().map_or(false, |n| n.get() > 1),
     };
@@ -82,6 +82,9 @@ fn build_walker(
         builder.git_ignore(false);
         builder.git_global(false);
         builder.git_exclude(false);
+    }
+    for path in &args.ignore_file {
+        builder.add_ignore(path);
     }
     builder.follow_links(args.follow);
     if let Some(depth) = args.max_depth {
@@ -142,14 +145,20 @@ fn walk_sequential(
     let mut had_errors = false;
     let mut stats = Stats::default();
     let mut unique_set = if args.unique { Some(printer::UniqueSet::new()) } else { None };
+    let mut head_remaining = args.head;
+    let mut offset_remaining = args.offset.unwrap_or(0);
+    let mut truncated = false;
+
+    let bufwtr = BufferWriter::stdout(color_choice);
 
     for path in &entries {
+        if truncated { break; }
         stats.files_searched += 1;
         let effective_max = args.effective_max(stats.match_count);
 
-        let mut out = termcolor::StandardStream::stdout(color_choice);
+        let mut buf = bufwtr.buffer();
         let (found, had_error, count, lines) = search::search_file_to_writer(
-            re, highlight_re, not_res, path, args, printer_opts, &mut out,
+            re, highlight_re, not_res, path, args, printer_opts, &mut buf,
             effective_max, unique_set.as_mut(),
         )?;
 
@@ -162,14 +171,38 @@ fn walk_sequential(
                 return Ok((true, had_errors, stats));
             }
         }
-
         stats.match_count += count;
+
+        let output = buf.as_slice();
+        let (maybe_out, chunk_truncated) = search::paginate_chunk(output, &mut offset_remaining, &mut head_remaining);
+        if chunk_truncated { truncated = true; }
+        if let Some(out) = maybe_out {
+            std::io::stdout().write_all(out)?;
+            std::io::stdout().flush()?;
+        }
+
         if args.max_total.map_or(false, |mt| stats.match_count >= mt) {
             break;
         }
     }
 
+    if truncated {
+        eprintln!("... [truncated at {} lines]", args.head.unwrap());
+    }
+
     Ok((found_any, had_errors, stats))
+}
+
+fn should_skip_entry(entry: &ignore::DirEntry, max_filesize: Option<u64>) -> bool {
+    if !entry.file_type().map_or(false, |ft| ft.is_file()) {
+        return true;
+    }
+    if let Some(max) = max_filesize {
+        if entry.metadata().map_or(false, |m| m.len() > max) {
+            return true;
+        }
+    }
+    false
 }
 
 fn walk_entries(walker: &WalkBuilder, max_filesize: Option<u64>) -> Vec<PathBuf> {
@@ -178,12 +211,68 @@ fn walk_entries(walker: &WalkBuilder, max_filesize: Option<u64>) -> Vec<PathBuf>
             Ok(e) => e,
             Err(err) => { eprintln!("resharp: {err}"); return None; }
         };
-        if !entry.file_type().map_or(false, |ft| ft.is_file()) { return None; }
-        if let Some(max) = max_filesize {
-            if entry.metadata().map_or(false, |m| m.len() > max) { return None; }
-        }
+        if should_skip_entry(&entry, max_filesize) { return None; }
         Some(entry.into_path())
     }).collect()
+}
+
+fn process_parallel_entry(
+    entry: Result<ignore::DirEntry, ignore::Error>,
+    quiet: bool,
+    max_total: Option<usize>,
+    max_filesize: Option<u64>,
+    found_any: &AtomicBool,
+    had_errors: &AtomicBool,
+    total_matches: &AtomicUsize,
+    files_searched: &AtomicUsize,
+    files_matched: &AtomicUsize,
+    total_lines: &AtomicUsize,
+    bufwtr: &BufferWriter,
+    re: &resharp::Regex,
+    highlight_re: Option<&resharp::Regex>,
+    not_res: &[resharp::Regex],
+    args: &Args,
+    printer_opts: &PrinterOpts,
+) -> ignore::WalkState {
+    if quiet && found_any.load(Ordering::Relaxed) {
+        return ignore::WalkState::Quit;
+    }
+    if let Some(mt) = max_total {
+        if total_matches.load(Ordering::Relaxed) >= mt {
+            return ignore::WalkState::Quit;
+        }
+    }
+    let entry = match entry {
+        Ok(e) => e,
+        Err(err) => {
+            eprintln!("resharp: {err}");
+            return ignore::WalkState::Continue;
+        }
+    };
+    if should_skip_entry(&entry, max_filesize) {
+        return ignore::WalkState::Continue;
+    }
+    files_searched.fetch_add(1, Ordering::Relaxed);
+    let effective_max = args.effective_max(total_matches.load(Ordering::Relaxed));
+    let mut buf = bufwtr.buffer();
+    match search::search_file_to_writer(re, highlight_re, not_res, entry.path(), args, printer_opts, &mut buf, effective_max, None) {
+        Ok((found, had_error, count, lines)) => {
+            total_lines.fetch_add(lines, Ordering::Relaxed);
+            if had_error { had_errors.store(true, Ordering::Relaxed); }
+            if found {
+                found_any.store(true, Ordering::Relaxed);
+                files_matched.fetch_add(1, Ordering::Relaxed);
+            }
+            total_matches.fetch_add(count, Ordering::Relaxed);
+            if !buf.as_slice().is_empty() {
+                let _ = bufwtr.print(&buf);
+            }
+        }
+        Err(err) => {
+            eprintln!("resharp: {}: {err}", entry.path().display());
+        }
+    }
+    ignore::WalkState::Continue
 }
 
 fn walk_parallel(
@@ -236,62 +325,13 @@ fn walk_parallel(
                     return Box::new(move |_| ignore::WalkState::Quit);
                 }
             };
-        Box::new(move |entry| {
-            if quiet && found_any.load(Ordering::Relaxed) {
-                return ignore::WalkState::Quit;
-            }
-
-            if let Some(mt) = max_total {
-                if total_matches.load(Ordering::Relaxed) >= mt {
-                    return ignore::WalkState::Quit;
-                }
-            }
-
-            let entry = match entry {
-                Ok(e) => e,
-                Err(err) => {
-                    eprintln!("resharp: {err}");
-                    return ignore::WalkState::Continue;
-                }
-            };
-
-            if !entry.file_type().map_or(false, |ft| ft.is_file()) {
-                return ignore::WalkState::Continue;
-            }
-
-            if let Some(max) = max_filesize {
-                if entry.metadata().map_or(false, |m| m.len() > max) {
-                    return ignore::WalkState::Continue;
-                }
-            }
-
-            files_searched.fetch_add(1, Ordering::Relaxed);
-
-            let effective_max = args.effective_max(total_matches.load(Ordering::Relaxed));
-
-            let mut buf = bufwtr.buffer();
-            match search::search_file_to_writer(&re, highlight_re.as_ref(), &not_res, entry.path(), args, printer_opts, &mut buf, effective_max, None) {
-                Ok((found, had_error, count, lines)) => {
-                    total_lines.fetch_add(lines, Ordering::Relaxed);
-                    if had_error {
-                        had_errors.store(true, Ordering::Relaxed);
-                    }
-                    if found {
-                        found_any.store(true, Ordering::Relaxed);
-                        files_matched.fetch_add(1, Ordering::Relaxed);
-                    }
-                    total_matches.fetch_add(count, Ordering::Relaxed);
-                    if !buf.as_slice().is_empty() {
-                        let _ = bufwtr.print(&buf);
-                    }
-                }
-                Err(err) => {
-                    eprintln!("resharp: {}: {err}", entry.path().display());
-                }
-            }
-
-            ignore::WalkState::Continue
-        })
+        Box::new(move |entry| process_parallel_entry(
+            entry, quiet, max_total, max_filesize,
+            &found_any, &had_errors, &total_matches,
+            &files_searched, &files_matched, &total_lines,
+            &bufwtr, &re, highlight_re.as_ref(), &not_res,
+            args, printer_opts,
+        ))
     });
 
     let stats = Stats {
@@ -314,54 +354,21 @@ pub fn walk_list_files(
     let walker = build_walker(args, paths, 1)?;
     let bufwtr = BufferWriter::stdout(color_choice);
     let mut stats = Stats::default();
-
-    let sorted = args.sort.as_deref() == Some("path");
-    let mut entries: Vec<PathBuf> = Vec::new();
     let count_lines = args.stats;
 
-    for entry in walker.build() {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(err) => {
-                eprintln!("resharp: {err}");
-                continue;
-            }
-        };
-
-        if !entry.file_type().map_or(false, |ft| ft.is_file()) {
-            continue;
-        }
-
-        if let Some(max) = max_filesize {
-            if entry.metadata().map_or(false, |m| m.len() > max) {
-                continue;
-            }
-        }
-
-        if sorted {
-            entries.push(entry.into_path());
-        } else {
-            stats.files_matched += 1;
-            if count_lines {
-                if let Ok(buf) = std::fs::read(entry.path()) {
-                    stats.total_lines += search::count_lines(&buf);
-                }
-            }
-            print_file_path(&bufwtr, entry.path(), args.null)?;
-        }
+    let mut entries = walk_entries(&walker, max_filesize);
+    if args.sort.as_deref() == Some("path") {
+        entries.sort();
     }
 
-    if sorted {
-        entries.sort();
-        for path in &entries {
-            stats.files_matched += 1;
-            if count_lines {
-                if let Ok(buf) = std::fs::read(path) {
-                    stats.total_lines += search::count_lines(&buf);
-                }
+    for path in &entries {
+        stats.files_matched += 1;
+        if count_lines {
+            if let Ok(buf) = std::fs::read(path) {
+                stats.total_lines += search::count_lines(&buf);
             }
-            print_file_path(&bufwtr, path, args.null)?;
         }
+        print_file_path(&bufwtr, path, args.null)?;
     }
 
     let found_any = stats.files_matched > 0;
@@ -390,29 +397,12 @@ pub fn collect_files(
     let max_filesize = args.parse_max_filesize()?;
     let walker = build_walker(args, paths, 1)?;
     let mut stats = Stats::default();
-    let mut result = Vec::new();
     let count_lines = args.stats;
 
-    for entry in walker.build() {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(err) => {
-                eprintln!("resharp: {err}");
-                continue;
-            }
-        };
+    let entries = walk_entries(&walker, max_filesize);
+    let mut result = Vec::with_capacity(entries.len());
 
-        if !entry.file_type().map_or(false, |ft| ft.is_file()) {
-            continue;
-        }
-
-        if let Some(max) = max_filesize {
-            if entry.metadata().map_or(false, |m| m.len() > max) {
-                continue;
-            }
-        }
-
-        let path = entry.into_path();
+    for path in entries {
         stats.files_matched += 1;
         if count_lines {
             if let Ok(buf) = std::fs::read(&path) {
@@ -437,34 +427,17 @@ pub fn collect_matching_files(
 ) -> anyhow::Result<(Vec<PathBuf>, Stats)> {
     let max_filesize = args.parse_max_filesize()?;
     let walker = build_walker(args, paths, 1)?;
+    let entries = walk_entries(&walker, max_filesize);
     let mut stats = Stats::default();
     let mut result = Vec::new();
 
-    for entry in walker.build() {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(err) => {
-                eprintln!("resharp: {err}");
-                continue;
-            }
-        };
-
-        if !entry.file_type().map_or(false, |ft| ft.is_file()) {
-            continue;
-        }
-
-        if let Some(max) = max_filesize {
-            if entry.metadata().map_or(false, |m| m.len() > max) {
-                continue;
-            }
-        }
-
+    for path in &entries {
         stats.files_searched += 1;
 
-        let data = match std::fs::read(entry.path()) {
+        let data = match std::fs::read(path) {
             Ok(d) => d,
             Err(err) => {
-                eprintln!("resharp: {}: {err}", entry.path().display());
+                eprintln!("resharp: {}: {err}", path.display());
                 continue;
             }
         };
@@ -477,7 +450,7 @@ pub fn collect_matching_files(
 
         let sr = search::search_buffer(re, None, &data, args, None);
         if sr.had_error {
-            eprintln!("resharp: {}: DFA capacity exceeded, skipping", entry.path().display());
+            eprintln!("resharp: {}: DFA capacity exceeded, skipping", path.display());
             continue;
         }
 
@@ -488,8 +461,7 @@ pub fn collect_matching_files(
         stats.match_count += sr.matches.len();
         if !sr.matches.is_empty() {
             stats.files_matched += 1;
-            let path = entry.into_path();
-            result.push(std::path::absolute(&path).unwrap_or(path));
+            result.push(std::path::absolute(path).unwrap_or_else(|_| path.clone()));
         }
     }
 

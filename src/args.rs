@@ -8,6 +8,7 @@ use clap::Parser;
     name = "re",
     about = "recursive search with boolean constraints",
     version,
+    disable_help_flag = true,
     before_help = "\x1b[1mExamples:\x1b[0m
   re TODO src/                              find TODO in src/
   re error -N debug -N trace src/           errors, filtering out debug and trace noise
@@ -180,6 +181,10 @@ pub struct Args {
     #[arg(long = "no-ignore-vcs")]
     pub no_ignore_vcs: bool,
 
+    /// additional ignore file (like .gitignore)
+    #[arg(long = "ignore-file", value_name = "PATH")]
+    pub ignore_file: Vec<PathBuf>,
+
     /// reduce filtering (-u: hidden, -uu: +no-ignore, -uuu: +binary)
     #[arg(short = 'u', long = "unrestricted", action = clap::ArgAction::Count)]
     pub unrestricted: u8,
@@ -241,7 +246,7 @@ pub struct Args {
     pub near: Option<usize>,
 
     /// stop after NUM total matches across all files
-    #[arg(long = "max-total", value_name = "NUM")]
+    #[arg(short = 'M', long = "max-total", value_name = "NUM")]
     pub max_total: Option<usize>,
 
     /// deduplicate matched strings (useful with -o)
@@ -267,6 +272,46 @@ pub struct Args {
     /// show the enclosing function or block header for each match
     #[arg(long = "show-scope")]
     pub show_scope: bool,
+
+    /// truncate long lines to fit terminal width
+    #[arg(long = "trim")]
+    pub trim: bool,
+
+    /// output file:line:col:text for editor integration (one line per match)
+    #[arg(long = "vimgrep")]
+    pub vimgrep: bool,
+
+    /// limit total output lines; prints a truncation notice when cut
+    #[arg(long = "head", value_name = "N")]
+    pub head: Option<usize>,
+
+    /// skip first N output lines (for tool integration, pairs with --head)
+    #[arg(long = "offset", value_name = "N")]
+    pub offset: Option<usize>,
+
+    /// print only the total match count as a plain number (machine-readable)
+    #[arg(long = "count-matches")]
+    pub count_matches: bool,
+
+    /// print help
+    #[arg(long = "help", action = clap::ArgAction::Help)]
+    pub help: Option<bool>,
+
+    /// suppress path prefix in output (non-heading mode)
+    #[arg(short = 'h', long = "no-filename")]
+    pub no_filename: bool,
+
+    /// print all lines, highlighting matches
+    #[arg(long = "passthru")]
+    pub passthru: bool,
+
+    /// skip lines longer than NUM columns
+    #[arg(long = "max-columns", value_name = "NUM")]
+    pub max_columns: Option<usize>,
+
+    /// separator between context groups (default: --)
+    #[arg(long = "context-separator", value_name = "SEP", default_value = "--")]
+    pub context_separator: String,
 }
 
 impl Args {
@@ -359,14 +404,14 @@ impl Args {
         }
 
         // apply transformations
-        let patterns: Vec<String> = patterns
+        let mut patterns: Vec<String> = patterns
             .into_iter()
             .map(|p| self.wrap_pattern(p, None))
             .collect();
 
         // combine with union
         let combined = if patterns.len() == 1 {
-            patterns.into_iter().next().unwrap()
+            patterns.pop().unwrap()
         } else {
             patterns
                 .into_iter()
@@ -425,7 +470,7 @@ impl Args {
             return None;
         }
         if terms.len() == 1 {
-            Some(terms.into_iter().next().unwrap())
+            Some(terms.pop().unwrap())
         } else {
             Some(terms.into_iter().map(|t| format!("({t})")).collect::<Vec<_>>().join("|"))
         }
@@ -687,15 +732,15 @@ impl Args {
             None => return Ok(None),
         };
         let s = s.trim();
-        let (num_str, multiplier) = if s.ends_with('K') || s.ends_with('k') {
-            (&s[..s.len() - 1], 1024u64)
-        } else if s.ends_with('M') || s.ends_with('m') {
-            (&s[..s.len() - 1], 1024 * 1024)
-        } else if s.ends_with('G') || s.ends_with('g') {
-            (&s[..s.len() - 1], 1024 * 1024 * 1024)
-        } else {
-            (s.as_ref(), 1u64)
-        };
+        const SUFFIXES: &[(&str, u64)] = &[
+            ("k", 1024), ("K", 1024),
+            ("m", 1024 * 1024), ("M", 1024 * 1024),
+            ("g", 1024 * 1024 * 1024), ("G", 1024 * 1024 * 1024),
+        ];
+        let (num_str, multiplier) = SUFFIXES.iter()
+            .find(|(suf, _)| s.ends_with(suf))
+            .map(|(suf, mult)| (&s[..s.len() - suf.len()], *mult))
+            .unwrap_or((s, 1u64));
         let n = num_str.parse::<u64>()
             .map_err(|_| anyhow::anyhow!("invalid --max-filesize value: {s}"))?;
         Ok(Some(n * multiplier))
@@ -755,6 +800,7 @@ pub fn parse() -> anyhow::Result<Args> {
         && !args.files_without_match
         && !args.quiet
         && !args.json
+        && !args.count_matches
     {
         args.files_with_matches = true;
     }

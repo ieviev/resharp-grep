@@ -22,6 +22,10 @@ pub struct PrinterOpts {
     pub unique: bool,
     pub show_scope: bool,
     pub null: bool,
+    pub trim_width: Option<usize>,
+    pub vimgrep: bool,
+    pub max_columns: Option<usize>,
+    pub context_separator: String,
 }
 
 impl PrinterOpts {
@@ -30,9 +34,34 @@ impl PrinterOpts {
             || args.paths.first().map_or(false, |p| p.is_dir())
             || args.paths.is_empty(); // default to "." which is a dir
 
+        if args.vimgrep {
+            return Self {
+                heading: false,
+                show_path: true,
+                line_number: true,
+                only_matching: args.only_matching,
+                count: false,
+                files_with_matches: false,
+                files_without_match: false,
+                column: true,
+                byte_offset: false,
+                before_ctx: 0,
+                after_ctx: 0,
+                replace: args.replace.clone(),
+                json: false,
+                unique: args.unique,
+                show_scope: false,
+                null: false,
+                trim_width: None,
+                vimgrep: true,
+                max_columns: args.max_columns,
+                context_separator: String::new(),
+            };
+        }
+
         Self {
             heading: args.show_heading(),
-            show_path: multi && !args.show_heading(),
+            show_path: multi && !args.show_heading() && !args.no_filename,
             line_number: args.show_line_number(multi),
             only_matching: args.only_matching,
             count: args.count,
@@ -47,6 +76,14 @@ impl PrinterOpts {
             unique: args.unique,
             show_scope: args.show_scope,
             null: args.null,
+            trim_width: if args.trim {
+                Some(detect_terminal_width())
+            } else {
+                None
+            },
+            vimgrep: false,
+            max_columns: args.max_columns,
+            context_separator: args.context_separator.clone(),
         }
     }
 }
@@ -105,7 +142,7 @@ impl UniqueSet {
 }
 
 pub fn write_results_with_unique(
-    mut out: &mut dyn WriteColor,
+    out: &mut dyn WriteColor,
     buf: &[u8],
     matches: &[LineMatch],
     path: Option<&str>,
@@ -117,7 +154,7 @@ pub fn write_results_with_unique(
     } else {
         None
     };
-    let mut unique_set = match unique_set {
+    let unique_set = match unique_set {
         Some(us) => Some(us),
         None => local_set.as_mut(),
     };
@@ -126,61 +163,89 @@ pub fn write_results_with_unique(
         return write_json_results(out, buf, matches, path, opts, unique_set);
     }
 
-    // files-with-matches / files-without-match mode
+    if opts.files_without_match || opts.files_with_matches {
+        return write_file_mode(out, matches, path, opts);
+    }
+
+    if opts.count {
+        return write_count_mode(out, matches, path);
+    }
+
+    write_text_matches(out, buf, matches, path, opts, unique_set)
+}
+
+fn write_file_mode(
+    out: &mut dyn WriteColor,
+    matches: &[LineMatch],
+    path: Option<&str>,
+    opts: &PrinterOpts,
+) -> anyhow::Result<()> {
     let print_file = (opts.files_without_match && matches.is_empty())
         || (opts.files_with_matches && !matches.is_empty());
-    if opts.files_without_match || opts.files_with_matches {
-        if print_file {
-            if let Some(p) = path {
-                if opts.null {
-                    write!(out, "{p}\0")?;
-                } else {
-                    out.set_color(ColorSpec::new().set_fg(Some(Color::Magenta)))?;
-                    write!(out, "{p}")?;
-                    out.reset()?;
-                    writeln!(out)?;
-                }
+    if print_file {
+        if let Some(p) = path {
+            if opts.null {
+                write!(out, "{p}\0")?;
+            } else {
+                out.set_color(ColorSpec::new().set_fg(Some(Color::Magenta)))?;
+                write!(out, "{p}")?;
+                out.reset()?;
+                writeln!(out)?;
             }
         }
+    }
+    Ok(())
+}
+
+fn write_count_mode(
+    out: &mut dyn WriteColor,
+    matches: &[LineMatch],
+    path: Option<&str>,
+) -> anyhow::Result<()> {
+    if matches.is_empty() {
         return Ok(());
     }
-
-    // count mode
-    if opts.count {
-        if matches.is_empty() {
-            return Ok(());
-        }
-        if let Some(p) = path {
-            out.set_color(ColorSpec::new().set_fg(Some(Color::Magenta)))?;
-            write!(out, "{p}")?;
-            out.reset()?;
-            write!(out, ":")?;
-        }
-        writeln!(out, "{}", matches.len())?;
-        return Ok(());
+    if let Some(p) = path {
+        out.set_color(ColorSpec::new().set_fg(Some(Color::Magenta)))?;
+        write!(out, "{p}")?;
+        out.reset()?;
+        write!(out, ":")?;
     }
+    writeln!(out, "{}", matches.len())?;
+    Ok(())
+}
 
+fn write_text_matches(
+    mut out: &mut dyn WriteColor,
+    buf: &[u8],
+    matches: &[LineMatch],
+    path: Option<&str>,
+    opts: &PrinterOpts,
+    mut unique_set: Option<&mut UniqueSet>,
+) -> anyhow::Result<()> {
     if matches.is_empty() {
         return Ok(());
     }
 
-    // heading mode: print path once
     if opts.heading {
         if let Some(p) = path {
+            let match_count = matches.iter().filter(|m| !m.match_ranges.is_empty()).count();
             out.set_color(ColorSpec::new().set_fg(Some(Color::Magenta)))?;
-            writeln!(out, "{p}")?;
+            write!(out, "{p}")?;
             out.reset()?;
+            out.set_color(ColorSpec::new().set_fg(Some(Color::Green)))?;
+            write!(out, " ({match_count})")?;
+            out.reset()?;
+            writeln!(out)?;
         }
     }
 
     let line_starts = search::build_line_index(buf);
     let total_lines = line_starts.len();
     let has_context = opts.before_ctx > 0 || opts.after_ctx > 0;
-
     let match_lines: std::collections::HashSet<usize> =
         matches.iter().map(|m| m.line_number).collect();
     let mut last_printed_line: Option<usize> = None;
-
     let mut last_scope_line: Option<usize> = None;
 
     for lm in matches {
@@ -192,10 +257,17 @@ pub fn write_results_with_unique(
             } else {
                 line
             };
-            if let Some(ref mut us) = unique_set.as_deref_mut() {
+            if let Some(us) = unique_set.as_mut() {
                 if !us.check(key) {
                     continue;
                 }
+            }
+        }
+
+        if let Some(max_col) = opts.max_columns {
+            let line = get_line(buf, &line_starts, lm.line_number);
+            if line.len() > max_col {
+                continue;
             }
         }
 
@@ -226,18 +298,13 @@ pub fn write_results_with_unique(
 
         if has_context {
             if let Some(last) = last_printed_line {
-                if ctx_start > last + 1 {
-                    writeln!(out, "--")?;
+                if ctx_start > last + 1 && !opts.context_separator.is_empty() {
+                    writeln!(out, "{}", opts.context_separator)?;
                 }
             }
-        }
-
-        if has_context {
             for line_idx in ctx_start..lm.line_number {
                 if last_printed_line.map_or(true, |l| line_idx > l) {
-                    print_context_line(
-                        &mut out, buf, &line_starts, line_idx, path, opts,
-                    )?;
+                    print_context_line(&mut out, buf, &line_starts, line_idx, path, opts)?;
                     last_printed_line = Some(line_idx);
                 }
             }
@@ -264,9 +331,7 @@ pub fn write_results_with_unique(
         if has_context {
             for line_idx in (lm.line_number + 1)..=ctx_end {
                 if !match_lines.contains(&line_idx) {
-                    print_context_line(
-                        &mut out, buf, &line_starts, line_idx, path, opts,
-                    )?;
+                    print_context_line(&mut out, buf, &line_starts, line_idx, path, opts)?;
                 }
                 last_printed_line = Some(line_idx);
             }
@@ -475,6 +540,98 @@ fn print_prefix(
     Ok(())
 }
 
+fn detect_terminal_width() -> usize {
+    if let Ok(cols) = std::env::var("COLUMNS") {
+        if let Ok(n) = cols.parse::<usize>() {
+            if n > 0 { return n; }
+        }
+    }
+    #[cfg(unix)]
+    {
+        #[repr(C)]
+        struct Winsize { ws_row: u16, ws_col: u16, ws_xpixel: u16, ws_ypixel: u16 }
+        extern "C" {
+            fn ioctl(fd: std::ffi::c_int, request: std::ffi::c_ulong, ...) -> std::ffi::c_int;
+        }
+        #[cfg(target_os = "linux")]
+        const TIOCGWINSZ: std::ffi::c_ulong = 0x5413;
+        #[cfg(target_os = "macos")]
+        const TIOCGWINSZ: std::ffi::c_ulong = 0x40087468;
+
+        let mut ws = Winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
+        let ret = unsafe { ioctl(2, TIOCGWINSZ, &mut ws as *mut Winsize) };
+        if ret == 0 && ws.ws_col > 0 {
+            return ws.ws_col as usize;
+        }
+    }
+    120
+}
+
+fn prefix_width(path: Option<&str>, opts: &PrinterOpts, lm: &LineMatch) -> usize {
+    let mut w = 0;
+    if opts.show_path {
+        if let Some(p) = path {
+            w += p.len() + 1;
+        }
+    }
+    if opts.line_number {
+        w += count_digits(lm.line_number + 1) + 1;
+    }
+    if opts.column && !lm.match_ranges.is_empty() {
+        w += count_digits(lm.match_ranges[0].0 + 1) + 1;
+    }
+    if opts.byte_offset {
+        w += count_digits(lm.line_start) + 1;
+    }
+    w
+}
+
+fn count_digits(mut n: usize) -> usize {
+    if n == 0 { return 1; }
+    let mut count = 0;
+    while n > 0 { count += 1; n /= 10; }
+    count
+}
+
+fn trim_line<'a>(
+    line: &'a [u8],
+    match_ranges: &[(usize, usize)],
+    max_width: usize,
+) -> (&'a [u8], Vec<(usize, usize)>, bool, bool) {
+    if max_width < 4 || line.len() <= max_width {
+        return (line, match_ranges.to_vec(), false, false);
+    }
+
+    let first_match_end = match_ranges.first().map(|&(_, e)| e).unwrap_or(0);
+
+    if first_match_end < max_width.saturating_sub(1) {
+        let end = max_width - 1;
+        let trimmed = &line[..end.min(line.len())];
+        let adjusted = adjust_match_ranges(match_ranges, 0, end);
+        (trimmed, adjusted, false, true)
+    } else {
+        let first_match_start = match_ranges.first().map(|&(s, _)| s).unwrap_or(0);
+        let context = max_width / 4;
+        let start = first_match_start.saturating_sub(context);
+        let has_left = start > 0;
+        let usable = max_width.saturating_sub(if has_left { 2 } else { 1 });
+        let end = (start + usable).min(line.len());
+        let has_right = end < line.len();
+        let trimmed = &line[start..end];
+        let adjusted = adjust_match_ranges(match_ranges, start, end);
+        (trimmed, adjusted, has_left, has_right)
+    }
+}
+
+fn adjust_match_ranges(ranges: &[(usize, usize)], offset: usize, end: usize) -> Vec<(usize, usize)> {
+    ranges.iter()
+        .filter_map(|&(ms, me)| {
+            if me <= offset || ms >= end { return None; }
+            Some((ms.max(offset) - offset, me.min(end) - offset))
+        })
+        .collect()
+}
+
 fn print_match_line(
     out: &mut dyn WriteColor,
     buf: &[u8],
@@ -483,35 +640,59 @@ fn print_match_line(
     path: Option<&str>,
     opts: &PrinterOpts,
 ) -> anyhow::Result<()> {
-    print_prefix(out, path, opts, lm, false)?;
-
-    let line = get_line(buf, line_starts, lm.line_number);
-
-    if lm.match_ranges.is_empty() {
-        out.write_all(line)?;
-        writeln!(out)?;
+    if opts.vimgrep && !lm.match_ranges.is_empty() {
+        let line = get_line(buf, line_starts, lm.line_number);
+        let line_text = String::from_utf8_lossy(line);
+        for &(ms, _) in &lm.match_ranges {
+            if let Some(p) = path {
+                write!(out, "{p}:")?;
+            }
+            writeln!(out, "{}:{}:{}", lm.line_number + 1, ms + 1, line_text)?;
+        }
         return Ok(());
     }
 
-    let mut pos = 0;
-    for &(ms, me) in &lm.match_ranges {
-        let ms = ms.min(line.len());
-        let me = me.min(line.len());
-        if ms > pos {
-            out.write_all(&line[pos..ms])?;
+    print_prefix(out, path, opts, lm, false)?;
+
+    let raw_line = get_line(buf, line_starts, lm.line_number);
+
+    let trimmed;
+    let (line, match_ranges, left_ell, right_ell) = if let Some(tw) = opts.trim_width {
+        let pw = prefix_width(path, opts, lm);
+        let (l, r, le, re) = trim_line(raw_line, &lm.match_ranges, tw.saturating_sub(pw));
+        trimmed = r;
+        (l, trimmed.as_slice(), le, re)
+    } else {
+        (raw_line, lm.match_ranges.as_slice(), false, false)
+    };
+
+    if left_ell { write!(out, "\u{2026}")?; }
+
+    if match_ranges.is_empty() {
+        out.write_all(line)?;
+    } else {
+        let mut pos = 0;
+        for &(ms, me) in match_ranges {
+            let ms = ms.min(line.len());
+            let me = me.min(line.len());
+            if ms > pos {
+                out.write_all(&line[pos..ms])?;
+            }
+            out.set_color(ColorSpec::new().set_fg(Some(Color::Red)).set_bold(true))?;
+            if let Some(ref repl) = opts.replace {
+                out.write_all(repl.as_bytes())?;
+            } else {
+                out.write_all(&line[ms..me])?;
+            }
+            out.reset()?;
+            pos = me;
         }
-        out.set_color(ColorSpec::new().set_fg(Some(Color::Red)).set_bold(true))?;
-        if let Some(ref repl) = opts.replace {
-            out.write_all(repl.as_bytes())?;
-        } else {
-            out.write_all(&line[ms..me])?;
+        if pos < line.len() {
+            out.write_all(&line[pos..])?;
         }
-        out.reset()?;
-        pos = me;
     }
-    if pos < line.len() {
-        out.write_all(&line[pos..])?;
-    }
+
+    if right_ell { write!(out, "\u{2026}")?; }
     writeln!(out)?;
     Ok(())
 }
@@ -531,7 +712,18 @@ fn print_context_line(
     };
     print_prefix(out, path, opts, &dummy, true)?;
     let line = get_line(buf, line_starts, line_idx);
-    out.write_all(line)?;
+    if let Some(tw) = opts.trim_width {
+        let pw = prefix_width(path, opts, &dummy);
+        let avail = tw.saturating_sub(pw);
+        if line.len() > avail && avail > 1 {
+            out.write_all(&line[..avail - 1])?;
+            write!(out, "\u{2026}")?;
+        } else {
+            out.write_all(line)?;
+        }
+    } else {
+        out.write_all(line)?;
+    }
     writeln!(out)?;
     Ok(())
 }

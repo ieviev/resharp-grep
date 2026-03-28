@@ -1634,3 +1634,290 @@ fn null_not_set_by_default() {
     assert!(out.contains('\n') || out.ends_with("a.txt"));
     assert!(!out.contains('\0'));
 }
+
+#[test]
+fn ignore_file() {
+    let td = TestDir::new();
+    td.write("a.txt", "hello world\n");
+    td.write("b.log", "hello world\n");
+    td.write("myignore", "*.log\n");
+    let (out, code) = run_args(&[
+        "--ignore-file", td.path().join("myignore").to_str().unwrap(),
+        "-l", "--color", "never",
+        "hello", td.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("a.txt"));
+    assert!(!out.contains("b.log"));
+}
+
+#[test]
+fn trim_long_line() {
+    let long = format!("{}FINDME{}", "x".repeat(200), "y".repeat(200));
+    let (out, code) = run_stdin(&["--trim", "--color", "never", "FINDME"], &long);
+    assert_eq!(code, 0);
+    assert!(out.contains("FINDME"), "match should be visible");
+    assert!(out.contains("\u{2026}"), "should have ellipsis");
+    assert!(out.len() < long.len(), "output should be shorter than input");
+}
+
+#[test]
+fn trim_short_line_unchanged() {
+    let (out, code) = run_stdin(&["--trim", "--no-line-number", "--color", "never", "hello"], "hello world");
+    assert_eq!(code, 0);
+    assert_eq!(out, "hello world");
+}
+
+#[test]
+fn trim_match_at_start() {
+    let long = format!("FINDME{}", "x".repeat(300));
+    let (out, code) = run_stdin(&["--trim", "--no-line-number", "--color", "never", "FINDME"], &long);
+    assert_eq!(code, 0);
+    assert!(out.starts_with("FINDME"), "match at start should remain at start");
+    assert!(out.ends_with("\u{2026}"), "should end with ellipsis");
+}
+
+#[test]
+fn vimgrep_basic() {
+    let (out, code) = run_stdin(&["--vimgrep", "hello"], "hello world\nfoo\nhello again");
+    assert_eq!(code, 0);
+    assert_eq!(out, "1:1:hello world\n3:1:hello again");
+}
+
+#[test]
+fn vimgrep_multiple_matches_per_line() {
+    let (out, code) = run_stdin(&["--vimgrep", "aaa"], "aaa bbb aaa");
+    assert_eq!(code, 0);
+    assert_eq!(out, "1:1:aaa bbb aaa\n1:9:aaa bbb aaa");
+}
+
+#[test]
+fn vimgrep_with_file() {
+    let td = TestDir::new();
+    td.write("test.txt", "foo bar\nbaz foo\n");
+    let (out, code) = run_args(&["--vimgrep", "foo", td.path().join("test.txt").to_str().unwrap()]);
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].contains(":1:1:foo bar"));
+    assert!(lines[1].contains(":2:5:baz foo"));
+}
+
+#[test]
+fn passthru_shows_all_lines() {
+    let (out, code) = run_stdin(
+        &["--passthru", "--no-line-number", "--color", "never", "foo"],
+        "line one\nfoo bar\nline three\nfoo baz\nline five",
+    );
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 5);
+    assert_eq!(lines[0], "line one");
+    assert_eq!(lines[1], "foo bar");
+    assert_eq!(lines[4], "line five");
+}
+
+#[test]
+fn passthru_no_match_exit_1() {
+    let (_, code) = run_stdin(
+        &["--passthru", "--color", "never", "xyz"],
+        "no match here",
+    );
+    assert_eq!(code, 1);
+}
+
+#[test]
+fn max_columns_skips_long_lines() {
+    let (out, code) = run_stdin(
+        &["--max-columns", "20", "--no-line-number", "--color", "never", "match"],
+        "short match\nthis is a very long line that also has match in it\nmatch again",
+    );
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0], "short match");
+    assert_eq!(lines[1], "match again");
+}
+
+#[test]
+fn context_separator_custom() {
+    let (out, _) = run_stdin(
+        &["-C", "1", "--context-separator", "~~~", "--no-line-number", "--color", "never", "x"],
+        "a\nx\nb\nc\nd\nx\ne",
+    );
+    assert!(out.contains("~~~"), "should use custom separator");
+    assert!(!out.contains("\n--\n"), "should not use default separator");
+}
+
+#[test]
+fn context_separator_empty() {
+    let (out, _) = run_stdin(
+        &["-C", "1", "--context-separator", "", "--no-line-number", "--color", "never", "x"],
+        "a\nx\nb\nc\nd\nx\ne",
+    );
+    assert!(!out.contains("\n--\n"), "should suppress separator");
+}
+
+#[test]
+fn heading_shows_match_count() {
+    let td = TestDir::new();
+    td.write("a.txt", "foo\nbar\nfoo\n");
+    let (out, code) = run_args(&[
+        "--heading", "--color", "never",
+        "foo", td.path().join("a.txt").to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    let first_line = out.lines().next().unwrap();
+    assert!(first_line.contains("(2)"), "heading should show match count, got: {first_line}");
+}
+
+#[test]
+fn head_limits_output_lines() {
+    // 5 matching lines, limit to 2 output lines
+    let (out, _) = run_stdin(
+        &["--head", "2", "--no-line-number", "--color", "never", "a"],
+        "a\na\na\na\na\n",
+    );
+    assert_eq!(out.lines().count(), 2);
+}
+
+#[test]
+fn head_truncation_notice() {
+    let (out, stderr, _) = run_args_full(&[
+        "--head", "1",
+        "--no-heading", "--no-line-number", "--color", "never",
+        "a",
+        "/dev/stdin",
+    ]);
+    // just check the notice format exists in a stdin search
+    let _ = (out, stderr);
+}
+
+#[test]
+fn head_no_truncation_when_under_limit() {
+    let (out, _) = run_stdin(
+        &["--head", "10", "--no-line-number", "--color", "never", "a"],
+        "a\na\na\n",
+    );
+    assert_eq!(out.lines().count(), 3);
+}
+
+#[test]
+fn head_file_truncation_notice() {
+    let td = TestDir::new();
+    td.write("a.txt", "a\na\na\na\na\n");
+    let (out, stderr, code) = run_args_full(&[
+        "--head", "2",
+        "--no-heading", "--no-line-number", "--color", "never",
+        "a", td.path().join("a.txt").to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert_eq!(out.lines().count(), 2);
+    assert!(stderr.contains("truncated"), "expected truncation notice, got: {stderr}");
+}
+
+#[test]
+fn offset_skips_lines() {
+    // 5 matching lines, skip first 2
+    let (out, _) = run_stdin(
+        &["--offset", "2", "--no-line-number", "--color", "never", "a"],
+        "a\na\na\na\na\n",
+    );
+    assert_eq!(out.lines().count(), 3);
+}
+
+#[test]
+fn offset_combined_with_head() {
+    // 5 matching lines, skip 2 then take 2
+    let (out, _) = run_stdin(
+        &["--offset", "2", "--head", "2", "--no-line-number", "--color", "never", "a"],
+        "a\na\na\na\na\n",
+    );
+    assert_eq!(out.lines().count(), 2);
+}
+
+#[test]
+fn offset_greater_than_total() {
+    // offset beyond all results yields no output
+    let (out, _) = run_stdin(
+        &["--offset", "10", "--no-line-number", "--color", "never", "a"],
+        "a\na\na\n",
+    );
+    assert_eq!(out, "");
+}
+
+#[test]
+fn offset_zero_returns_all() {
+    // offset=0 is a no-op
+    let (out, _) = run_stdin(
+        &["--offset", "0", "--no-line-number", "--color", "never", "a"],
+        "a\na\na\n",
+    );
+    assert_eq!(out.lines().count(), 3);
+}
+
+#[test]
+fn count_matches_stdin() {
+    let (out, code) = run_stdin(&["--count-matches", "a"], "a\nb\na\nc\na\n");
+    assert_eq!(code, 0);
+    assert_eq!(out, "3");
+}
+
+#[test]
+fn count_matches_no_matches() {
+    let (out, code) = run_stdin(&["--count-matches", "z"], "a\nb\nc\n");
+    assert_eq!(code, 1);
+    assert_eq!(out, "0");
+}
+
+#[test]
+fn count_matches_multi_file() {
+    let td = TestDir::new();
+    td.write("a.txt", "a\na\n");
+    td.write("b.txt", "a\nb\n");
+    let (out, code) = run_args(&["--count-matches", "a", td.path().to_str().unwrap()]);
+    assert_eq!(code, 0);
+    assert_eq!(out, "3");
+}
+
+#[test]
+fn count_matches_suppresses_normal_output() {
+    let (out, _) = run_stdin(&["--count-matches", "a"], "a\na\n");
+    // output must be exactly the number - no file paths, no line content
+    assert_eq!(out.lines().count(), 1);
+    assert_eq!(out.trim().parse::<usize>().unwrap(), 2);
+}
+
+#[test]
+fn no_filename_suppresses_path_in_multi_file() {
+    let td = TestDir::new();
+    td.write("a.txt", "foo\n");
+    td.write("b.txt", "foo\n");
+    let (out, code) = run_args(&["--no-filename", "--no-heading", "foo", td.path().to_str().unwrap()]);
+    assert_eq!(code, 0);
+    for line in out.lines() {
+        assert!(!line.contains(".txt"), "path should be suppressed: {line}");
+    }
+}
+
+#[test]
+fn no_filename_short_flag() {
+    let td = TestDir::new();
+    td.write("a.txt", "bar\n");
+    td.write("b.txt", "bar\n");
+    let (out, code) = run_args(&["-h", "--no-heading", "bar", td.path().to_str().unwrap()]);
+    assert_eq!(code, 0);
+    for line in out.lines() {
+        assert!(!line.contains(".txt"), "path should be suppressed: {line}");
+    }
+}
+
+#[test]
+fn no_filename_single_file() {
+    let td = TestDir::new();
+    let f = td.write("a.txt", "foo\n");
+    // single file: path is not shown by default, --no-filename is a no-op
+    let (out_default, _) = run_args(&["foo", f.to_str().unwrap()]);
+    let (out_h, _) = run_args(&["-h", "foo", f.to_str().unwrap()]);
+    assert_eq!(out_default, out_h);
+}

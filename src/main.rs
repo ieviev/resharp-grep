@@ -108,7 +108,10 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
 
     let scope_needs_files = args.scope.as_deref() == Some("file") || args.files_without_match;
     if args.paths.is_empty() && !std::io::stdin().is_terminal() && !scope_needs_files {
-        let found = search::search_stdin(&re, highlight_re.as_ref(), &not_res, &args, &printer_opts, color_choice)?;
+        let (found, match_count) = search::search_stdin(&re, highlight_re.as_ref(), &not_res, &args, &printer_opts, color_choice)?;
+        if args.count_matches {
+            println!("{match_count}");
+        }
         return Ok((found, false, None));
     }
 
@@ -116,6 +119,9 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
 
     let (found, errors, mut stats) =
         walk::walk_and_search(&re, highlight_re.as_ref(), &pattern, highlight_pattern.as_deref(), &not_patterns, &args, &paths, &printer_opts, color_choice)?;
+    if args.count_matches {
+        println!("{}", stats.match_count);
+    }
     if args.stats {
         stats.elapsed = start.elapsed();
         print_stats(&stats, false);

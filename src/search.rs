@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 
 use crate::args::Args;
@@ -12,6 +12,7 @@ pub struct LineMatch {
 
 pub struct SearchResult {
     pub matches: Vec<LineMatch>,
+    pub match_count: usize,
     pub had_error: bool,
 }
 
@@ -54,6 +55,7 @@ pub fn search_buffer(
     if buf.is_empty() {
         return SearchResult {
             matches: vec![],
+            match_count: 0,
             had_error: false,
         };
     }
@@ -63,6 +65,7 @@ pub fn search_buffer(
         Err(_) => {
             return SearchResult {
                 matches: vec![],
+                match_count: 0,
                 had_error: true,
             };
         }
@@ -136,8 +139,10 @@ pub fn search_buffer(
                 });
             }
         }
+        let count = inverted.len();
         return SearchResult {
             matches: inverted,
+            match_count: count,
             had_error: false,
         };
     }
@@ -147,8 +152,37 @@ pub fn search_buffer(
         line_matches.truncate(max);
     }
 
+    let match_count = line_matches.len();
+
+    if args.passthru {
+        let mut all_lines = Vec::with_capacity(line_starts.len());
+        let mut mi = 0;
+        for (i, &ls) in line_starts.iter().enumerate() {
+            if mi < line_matches.len() && line_matches[mi].line_number == i {
+                all_lines.push(LineMatch {
+                    line_number: i,
+                    line_start: ls,
+                    match_ranges: std::mem::take(&mut line_matches[mi].match_ranges),
+                });
+                mi += 1;
+            } else {
+                all_lines.push(LineMatch {
+                    line_number: i,
+                    line_start: ls,
+                    match_ranges: vec![],
+                });
+            }
+        }
+        return SearchResult {
+            matches: all_lines,
+            match_count,
+            had_error: false,
+        };
+    }
+
     SearchResult {
         matches: line_matches,
+        match_count,
         had_error: false,
     }
 }
@@ -224,14 +258,14 @@ pub fn search_file_to_writer(
         return Ok((false, true, 0, line_count));
     }
 
-    if !result.matches.is_empty() && any_not_matches(not_res, buf) {
+    if result.match_count > 0 && any_not_matches(not_res, buf) {
         return Ok((false, false, 0, line_count));
     }
 
-    let match_count = result.matches.len();
+    let match_count = result.match_count;
     let found = match_count > 0;
 
-    if args.quiet {
+    if args.quiet || args.count_matches {
         return Ok((found, false, match_count, line_count));
     }
 
@@ -241,6 +275,61 @@ pub fn search_file_to_writer(
     Ok((found, false, match_count, line_count))
 }
 
+/// Returns the byte offset just after the nth newline in `data`, or `data.len()` if fewer than n newlines.
+pub fn find_nth_newline(data: &[u8], n: usize) -> usize {
+    let mut count = 0;
+    for (i, &b) in data.iter().enumerate() {
+        if b == b'\n' {
+            count += 1;
+            if count >= n {
+                return i + 1;
+            }
+        }
+    }
+    data.len()
+}
+
+/// Applies offset/head pagination to one output chunk.
+///
+/// Updates `offset_remaining` and `head_remaining` in-place.
+/// Returns `(slice_to_write, truncated)` - `None` slice means skip entirely.
+pub fn paginate_chunk<'a>(
+    output: &'a [u8],
+    offset_remaining: &mut usize,
+    head_remaining: &mut Option<usize>,
+) -> (Option<&'a [u8]>, bool) {
+    let file_lines = output.iter().filter(|&&b| b == b'\n').count();
+
+    let (output, file_lines) = if *offset_remaining > 0 {
+        if file_lines <= *offset_remaining {
+            *offset_remaining -= file_lines;
+            return (None, false);
+        }
+        let skip_to = find_nth_newline(output, *offset_remaining);
+        let skipped = output[..skip_to].iter().filter(|&&b| b == b'\n').count();
+        *offset_remaining = 0;
+        (&output[skip_to..], file_lines - skipped)
+    } else {
+        (output, file_lines)
+    };
+
+    if let Some(ref mut remaining) = head_remaining {
+        if *remaining == 0 {
+            return (None, file_lines > 0);
+        }
+        if file_lines <= *remaining {
+            *remaining -= file_lines;
+            (Some(output), false)
+        } else {
+            let cut = find_nth_newline(output, *remaining);
+            *remaining = 0;
+            (Some(&output[..cut]), true)
+        }
+    } else {
+        (Some(output), false)
+    }
+}
+
 pub fn search_stdin(
     re: &resharp::Regex,
     highlight_re: Option<&resharp::Regex>,
@@ -248,26 +337,45 @@ pub fn search_stdin(
     args: &Args,
     printer_opts: &PrinterOpts,
     color_choice: termcolor::ColorChoice,
-) -> anyhow::Result<bool> {
-    let mut buf = Vec::new();
-    std::io::stdin().read_to_end(&mut buf)?;
+) -> anyhow::Result<(bool, usize)> {
+    let mut stdin_buf = Vec::new();
+    std::io::stdin().read_to_end(&mut stdin_buf)?;
 
-    let result = search_buffer(re, highlight_re, &buf, args, args.effective_max(0));
+    let result = search_buffer(re, highlight_re, &stdin_buf, args, args.effective_max(0));
 
     if result.had_error {
         anyhow::bail!("DFA capacity exceeded");
     }
 
-    if !result.matches.is_empty() && any_not_matches(not_res, &buf) {
-        return Ok(false);
+    if result.match_count > 0 && any_not_matches(not_res, &stdin_buf) {
+        return Ok((false, 0));
     }
 
-    let found = !result.matches.is_empty();
+    let match_count = result.match_count;
+    let found = match_count > 0;
 
-    if !args.quiet {
-        printer::print_results(&buf, &result.matches, None, printer_opts, color_choice)?;
+    if !args.quiet && !args.count_matches {
+        if args.head.is_some() || args.offset.is_some() {
+            let bufwtr = termcolor::BufferWriter::stdout(color_choice);
+            let mut out_buf = bufwtr.buffer();
+            printer::write_results_with_unique(&mut out_buf, &stdin_buf, &result.matches, None, printer_opts, None)?;
+            let output = out_buf.as_slice();
+
+            let mut offset_remaining = args.offset.unwrap_or(0);
+            let mut head_remaining = args.head;
+            let (maybe_out, truncated) = paginate_chunk(output, &mut offset_remaining, &mut head_remaining);
+            if let Some(out) = maybe_out {
+                std::io::stdout().write_all(out)?;
+                std::io::stdout().flush()?;
+            }
+            if truncated {
+                eprintln!("... [truncated at {} lines]", args.head.unwrap());
+            }
+        } else {
+            printer::print_results(&stdin_buf, &result.matches, None, printer_opts, color_choice)?;
+        }
     }
 
-    Ok(found)
+    Ok((found, match_count))
 }
 
