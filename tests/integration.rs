@@ -157,6 +157,16 @@ fn smart_case_lower() {
 }
 
 #[test]
+fn case_insensitive_union_all_terms() {
+    // -i flag should apply to all terms of a union, not just the leftmost
+    let input = "MIN\nMAX\n";
+    let (out, _) = run_stdin(&["-i", "min|max"], input);
+    assert_eq!(out, "1:MIN\n2:MAX", "min|max should match both MIN and MAX");
+    let (out, _) = run_stdin(&["-i", "max|min"], input);
+    assert_eq!(out, "1:MIN\n2:MAX", "max|min should match both MIN and MAX");
+}
+
+#[test]
 fn smart_case_upper() {
     let (out, _) = run_stdin(&["-S", "Hello"], "hello world\nHello World\nHELLO WORLD\nhello\n");
     assert_eq!(out, "2:Hello World");
