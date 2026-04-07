@@ -33,7 +33,6 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
         let mut cmd = <args::Args as clap::CommandFactory>::command();
         let mut out = std::io::stdout();
         clap_complete::generate(shell, &mut cmd, "re", &mut out);
-        clap_complete::generate(shell, &mut cmd, "resharp", &mut out);
         return Ok((true, false, None));
     }
 
@@ -80,16 +79,20 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
     let (pattern, not_patterns) = args.resolve_pattern()?;
     let re = resharp::Regex::with_options(&pattern, args.engine_opts())
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let not_res: Vec<resharp::Regex> = not_patterns.iter()
-        .map(|p| resharp::Regex::with_options(p, args.engine_opts())
-            .map_err(|e| anyhow::anyhow!("{e}")))
+    let not_res: Vec<resharp::Regex> = not_patterns
+        .iter()
+        .map(|p| {
+            resharp::Regex::with_options(p, args.engine_opts()).map_err(|e| anyhow::anyhow!("{e}"))
+        })
         .collect::<anyhow::Result<_>>()?;
 
     let highlight_pattern = args.resolve_highlight_pattern();
-    let highlight_re = highlight_pattern.as_ref().map(|hp| {
-        resharp::Regex::with_options(hp, args.engine_opts())
-            .map_err(|e| anyhow::anyhow!("{e}"))
-    }).transpose()?;
+    let highlight_re = highlight_pattern
+        .as_ref()
+        .map(|hp| {
+            resharp::Regex::with_options(hp, args.engine_opts()).map_err(|e| anyhow::anyhow!("{e}"))
+        })
+        .transpose()?;
 
     if has_exec {
         let paths = args.resolved_paths()?;
@@ -108,7 +111,14 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
 
     let scope_needs_files = args.scope.as_deref() == Some("file") || args.files_without_match;
     if args.paths.is_empty() && !std::io::stdin().is_terminal() && !scope_needs_files {
-        let (found, match_count) = search::search_stdin(&re, highlight_re.as_ref(), &not_res, &args, &printer_opts, color_choice)?;
+        let (found, match_count) = search::search_stdin(
+            &re,
+            highlight_re.as_ref(),
+            &not_res,
+            &args,
+            &printer_opts,
+            color_choice,
+        )?;
         if args.count_matches {
             println!("{match_count}");
         }
@@ -117,8 +127,17 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
 
     let paths = args.resolved_paths()?;
 
-    let (found, errors, mut stats) =
-        walk::walk_and_search(&re, highlight_re.as_ref(), &pattern, highlight_pattern.as_deref(), &not_patterns, &args, &paths, &printer_opts, color_choice)?;
+    let (found, errors, mut stats) = walk::walk_and_search(
+        &re,
+        highlight_re.as_ref(),
+        &pattern,
+        highlight_pattern.as_deref(),
+        &not_patterns,
+        &args,
+        &paths,
+        &printer_opts,
+        color_choice,
+    )?;
     if args.count_matches {
         println!("{}", stats.match_count);
     }
@@ -138,11 +157,14 @@ fn print_stats(stats: &walk::Stats, file_list_mode: bool) {
     };
 
     if file_list_mode {
-        eprintln!("\n{} files, {} lines [{}]",
-            stats.files_matched, stats.total_lines, time);
+        eprintln!(
+            "\n{} files, {} lines [{}]",
+            stats.files_matched, stats.total_lines, time
+        );
     } else {
-        eprintln!("\n{} files searched, {} matched, {} matches, {} lines [{}]",
-            stats.files_searched, stats.files_matched,
-            stats.match_count, stats.total_lines, time);
+        eprintln!(
+            "\n{} files searched, {} matched, {} matches, {} lines [{}]",
+            stats.files_searched, stats.files_matched, stats.match_count, stats.total_lines, time
+        );
     }
 }

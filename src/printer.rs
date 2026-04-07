@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::io::IsTerminal;
 
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
@@ -32,7 +33,7 @@ impl PrinterOpts {
     pub fn from_args(args: &Args) -> Self {
         let multi = args.paths.len() > 1
             || args.paths.first().map_or(false, |p| p.is_dir())
-            || args.paths.is_empty(); // default to "." which is a dir
+            || (args.paths.is_empty() && std::io::stdin().is_terminal()); // cwd is a dir, but piped stdin is not multi-file
 
         if args.vimgrep {
             return Self {

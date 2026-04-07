@@ -86,7 +86,7 @@ fn run_args_full(args: &[&str]) -> (String, String, i32) {
 #[test]
 fn stdin_match() {
     let (out, _) = run_stdin(&["apple"], "apple pie\nbanana split\napple sauce\n");
-    assert_eq!(out, "1:apple pie\n3:apple sauce");
+    assert_eq!(out, "apple pie\napple sauce");
 }
 
 #[test]
@@ -108,25 +108,25 @@ fn no_match_empty() {
 
 #[test]
 fn regex_char_class() {
-    let (out, _) = run_stdin(&["[ac].*e"], "apple pie\nbanana split\napple sauce\ncherry tart\n");
+    let (out, _) = run_stdin(&["-n", "[ac].*e"], "apple pie\nbanana split\napple sauce\ncherry tart\n");
     assert_eq!(out, "1:apple pie\n3:apple sauce\n4:cherry tart");
 }
 
 #[test]
 fn regex_anchor_start() {
-    let (out, _) = run_stdin(&["^apple"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
+    let (out, _) = run_stdin(&["-n", "^apple"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
     assert_eq!(out, "1:apple pie\n3:apple sauce");
 }
 
 #[test]
 fn regex_anchor_end() {
-    let (out, _) = run_stdin(&["e$"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
+    let (out, _) = run_stdin(&["-n", "e$"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
     assert_eq!(out, "1:apple pie\n3:apple sauce\n5:grape juice");
 }
 
 #[test]
 fn no_trailing_newline() {
-    let (out, _) = run_stdin(&["newline"], "no newline at end");
+    let (out, _) = run_stdin(&["-n", "newline"], "no newline at end");
     assert_eq!(out, "1:no newline at end");
 }
 
@@ -140,19 +140,19 @@ fn empty_input() {
 
 #[test]
 fn case_insensitive() {
-    let (out, _) = run_stdin(&["-i", "hello"], "hello world\nHello World\nHELLO WORLD\nhello\n");
+    let (out, _) = run_stdin(&["-n", "-i", "hello"], "hello world\nHello World\nHELLO WORLD\nhello\n");
     assert_eq!(out, "1:hello world\n2:Hello World\n3:HELLO WORLD\n4:hello");
 }
 
 #[test]
 fn case_sensitive() {
-    let (out, _) = run_stdin(&["-s", "hello"], "hello world\nHello World\nHELLO WORLD\nhello\n");
+    let (out, _) = run_stdin(&["-n", "-s", "hello"], "hello world\nHello World\nHELLO WORLD\nhello\n");
     assert_eq!(out, "1:hello world\n4:hello");
 }
 
 #[test]
 fn smart_case_lower() {
-    let (out, _) = run_stdin(&["-S", "hello"], "hello world\nHello World\nHELLO WORLD\nhello\n");
+    let (out, _) = run_stdin(&["-n", "-S", "hello"], "hello world\nHello World\nHELLO WORLD\nhello\n");
     assert_eq!(out, "1:hello world\n2:Hello World\n3:HELLO WORLD\n4:hello");
 }
 
@@ -160,40 +160,40 @@ fn smart_case_lower() {
 fn case_insensitive_union_all_terms() {
     // -i flag should apply to all terms of a union, not just the leftmost
     let input = "MIN\nMAX\n";
-    let (out, _) = run_stdin(&["-i", "min|max"], input);
+    let (out, _) = run_stdin(&["-n", "-i", "min|max"], input);
     assert_eq!(out, "1:MIN\n2:MAX", "min|max should match both MIN and MAX");
-    let (out, _) = run_stdin(&["-i", "max|min"], input);
+    let (out, _) = run_stdin(&["-n", "-i", "max|min"], input);
     assert_eq!(out, "1:MIN\n2:MAX", "max|min should match both MIN and MAX");
 }
 
 #[test]
 fn smart_case_upper() {
-    let (out, _) = run_stdin(&["-S", "Hello"], "hello world\nHello World\nHELLO WORLD\nhello\n");
+    let (out, _) = run_stdin(&["-n", "-S", "Hello"], "hello world\nHello World\nHELLO WORLD\nhello\n");
     assert_eq!(out, "2:Hello World");
 }
 
 
 #[test]
 fn invert_match() {
-    let (out, _) = run_stdin(&["-v", "apple|sauce"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
+    let (out, _) = run_stdin(&["-n", "-v", "apple|sauce"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
     assert_eq!(out, "2:banana split\n4:cherry tart\n5:grape juice");
 }
 
 #[test]
 fn word_match() {
-    let (out, _) = run_stdin(&["-w", "cat"], "the cat sat\ncatalog\nthe cat and dog\nscatter\n");
+    let (out, _) = run_stdin(&["-n", "-w", "cat"], "the cat sat\ncatalog\nthe cat and dog\nscatter\n");
     assert_eq!(out, "1:the cat sat\n3:the cat and dog");
 }
 
 #[test]
 fn line_match() {
-    let (out, _) = run_stdin(&["-x", "hello"], "hello world\nHello World\nHELLO WORLD\nhello\n");
+    let (out, _) = run_stdin(&["-n", "-x", "hello"], "hello world\nHello World\nHELLO WORLD\nhello\n");
     assert_eq!(out, "4:hello");
 }
 
 #[test]
 fn max_count() {
-    let (out, _) = run_stdin(&["-m", "1", "apple"], "apple pie\nbanana split\napple sauce\n");
+    let (out, _) = run_stdin(&["-n", "-m", "1", "apple"], "apple pie\nbanana split\napple sauce\n");
     assert_eq!(out, "1:apple pie");
 }
 
@@ -206,19 +206,19 @@ fn count() {
 
 #[test]
 fn only_matching() {
-    let (out, _) = run_stdin(&["-o", "apple"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
+    let (out, _) = run_stdin(&["-n", "-o", "apple"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
     assert_eq!(out, "1:apple\n3:apple");
 }
 
 #[test]
 fn column() {
-    let (out, _) = run_stdin(&["--column", "bar"], "foo bar baz\n");
+    let (out, _) = run_stdin(&["-n", "--column", "bar"], "foo bar baz\n");
     assert_eq!(out, "1:5:foo bar baz");
 }
 
 #[test]
 fn byte_offset() {
-    let (out, _) = run_stdin(&["-b", "bbb"], "aaa\nbbb\nccc\n");
+    let (out, _) = run_stdin(&["-n", "-b", "bbb"], "aaa\nbbb\nccc\n");
     assert_eq!(out, "2:4:bbb");
 }
 
@@ -245,32 +245,32 @@ fn files_without_match() {
 
 #[test]
 fn after_context() {
-    let (out, _) = run_stdin(&["-A", "1", "banana"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
+    let (out, _) = run_stdin(&["-n", "-A", "1", "banana"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
     assert_eq!(out, "2:banana split\n3-apple sauce");
 }
 
 #[test]
 fn before_context() {
-    let (out, _) = run_stdin(&["-B", "1", "banana"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
+    let (out, _) = run_stdin(&["-n", "-B", "1", "banana"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
     assert_eq!(out, "1-apple pie\n2:banana split");
 }
 
 #[test]
 fn context_both() {
-    let (out, _) = run_stdin(&["-C", "1", "apple"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
+    let (out, _) = run_stdin(&["-n", "-C", "1", "apple"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
     assert_eq!(out, "1:apple pie\n2-banana split\n3:apple sauce\n4-cherry tart");
 }
 
 #[test]
 fn context_separator() {
-    let (out, _) = run_stdin(&["-C", "1", "pie|juice"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
+    let (out, _) = run_stdin(&["-n", "-C", "1", "pie|juice"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
     assert_eq!(out, "1:apple pie\n2-banana split\n--\n4-cherry tart\n5:grape juice");
 }
 
 
 #[test]
 fn multiple_patterns_e() {
-    let (out, _) = run_stdin(&["-e", "apple", "-e", "banana"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
+    let (out, _) = run_stdin(&["-n", "-e", "apple", "-e", "banana"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
     assert_eq!(out, "1:apple pie\n2:banana split\n3:apple sauce");
 }
 
@@ -279,7 +279,7 @@ fn pattern_file() {
     let td = TestDir::new();
     let pf = td.write("pats.txt", "apple\nbanana\n");
     let (out, _) = run_stdin(
-        &["-f", pf.to_str().unwrap()],
+        &["-n", "-f", pf.to_str().unwrap()],
         "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n",
     );
     assert_eq!(out, "1:apple pie\n2:banana split\n3:apple sauce");
@@ -298,46 +298,46 @@ fn e_with_file_path() {
 
 #[test]
 fn fixed_strings() {
-    let (out, _) = run_stdin(&["-F", "foo.bar"], "foo.bar\nfooXbar\n");
+    let (out, _) = run_stdin(&["-n", "-F", "foo.bar"], "foo.bar\nfooXbar\n");
     assert_eq!(out, "1:foo.bar");
 }
 
 
 #[test]
 fn wildcard_underscore() {
-    let (out, _) = run_stdin(&["_*apple_*"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
+    let (out, _) = run_stdin(&["-n", "_*apple_*"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
     assert_eq!(out, "1:apple pie\n3:apple sauce");
 }
 
 #[test]
 fn intersection() {
-    let (out, _) = run_stdin(&["(_*cat_*)&(_*the_*)"], "the cat sat\ncatalog\nthe cat and dog\nscatter\n");
+    let (out, _) = run_stdin(&["-n", "(_*cat_*)&(_*the_*)"], "the cat sat\ncatalog\nthe cat and dog\nscatter\n");
     assert_eq!(out, "1:the cat sat\n3:the cat and dog");
 }
 
 #[test]
 fn intersection_both() {
-    let (out, _) = run_stdin(&["(_*cat_*)&(_*dog_*)"], "the cat sat\ncatalog\nthe cat and dog\nscatter\n");
+    let (out, _) = run_stdin(&["-n", "(_*cat_*)&(_*dog_*)"], "the cat sat\ncatalog\nthe cat and dog\nscatter\n");
     assert_eq!(out, "3:the cat and dog");
 }
 
 
 #[test]
 fn lookahead_positive() {
-    let (out, _) = run_stdin(&["(?=.*cat)(?=.*mat).*"], "the cat sat on the mat\nthe dog sat\ncat on mat\n");
+    let (out, _) = run_stdin(&["-n", "(?=.*cat)(?=.*mat).*"], "the cat sat on the mat\nthe dog sat\ncat on mat\n");
     assert_eq!(out, "1:the cat sat on the mat\n3:cat on mat");
 }
 
 #[test]
 fn lookbehind_positive() {
-    let (out, _) = run_stdin(&["(?<=foo)bar"], "foobar\nbazbar\nfooqux\n");
+    let (out, _) = run_stdin(&["-n", "(?<=foo)bar"], "foobar\nbazbar\nfooqux\n");
     assert_eq!(out, "1:foobar");
 }
 
 #[test]
 fn lookahead_with_intersection() {
     // lookahead and resharp intersection should compose
-    let (out, _) = run_stdin(&["(?=.*hello)(_*world_*)"], "hello world\nfoo world\nhello bar\n");
+    let (out, _) = run_stdin(&["-n", "(?=.*hello)(_*world_*)"], "hello world\nfoo world\nhello bar\n");
     assert_eq!(out, "1:hello world");
 }
 
@@ -353,7 +353,7 @@ fn paragraphs_blocks_cross_para() {
 #[test]
 fn paragraphs_within_para() {
     let input = "first paragraph about\ncats and dogs together\n\nsecond paragraph about\nfish and birds\n\nthird paragraph with\ncats but no dogs\n";
-    let (out, _) = run_stdin(&["--paragraphs", "(_*cats_*)&(_*dogs_*)"], input);
+    let (out, _) = run_stdin(&["-n", "--paragraphs", "(_*cats_*)&(_*dogs_*)"], input);
     let lines: Vec<&str> = out.lines().take(2).collect();
     assert_eq!(lines, vec!["1:first paragraph about", "2:cats and dogs together"]);
 }
@@ -362,7 +362,7 @@ fn paragraphs_within_para() {
 #[test]
 fn paragraphs_words_match() {
     let input = "first paragraph about\ncats and dogs together\n\nsecond paragraph about\nfish and birds\n";
-    let (out, code) = run_stdin(&["-p", "cats", "-p", "dogs"], input);
+    let (out, code) = run_stdin(&["-n", "-p", "cats", "-p", "dogs"], input);
     assert_eq!(code, 0);
     let lines: Vec<&str> = out.lines().take(2).collect();
     assert_eq!(lines, vec!["1:first paragraph about", "2:cats and dogs together"]);
@@ -428,14 +428,28 @@ fn paragraphs_flag_with_not() {
 #[test]
 fn type_filter() {
     let td = TestDir::new();
+    // both files contain "main" - without -t the py file would also match
     td.write("dir/main.rs", "fn main() {}\n");
     td.write("dir/main.py", "def main():\n");
     let (out, _) = run_args(&[
         "-t", "rust", "--no-heading", "--no-line-number", "--color", "never",
-        "fn main", td.path().join("dir").to_str().unwrap(),
+        "main", td.path().join("dir").to_str().unwrap(),
     ]);
     assert!(out.contains("fn main() {}"));
-    assert!(!out.contains("def main"));
+    assert!(!out.contains("def main"), "-t rust should exclude .py files");
+}
+
+#[test]
+fn type_not_filter() {
+    let td = TestDir::new();
+    td.write("dir/main.rs", "fn main() {}\n");
+    td.write("dir/main.py", "def main():\n");
+    let (out, _) = run_args(&[
+        "-T", "rust", "--no-heading", "--no-line-number", "--color", "never",
+        "main", td.path().join("dir").to_str().unwrap(),
+    ]);
+    assert!(out.contains("def main"), "-T rust should include .py files");
+    assert!(!out.contains("fn main"), "-T rust should exclude .rs files");
 }
 
 #[test]
@@ -757,7 +771,7 @@ fn find_all_no_trailing_newline_large_intersection() {
 #[test]
 fn scope_line_default() {
     // default scope is line, same as always
-    let (out, _) = run_stdin(&["-W", "cat", "-W", "dog"], "the cat and dog\ncat only\ndog only\n");
+    let (out, _) = run_stdin(&["-n", "-W", "cat", "-W", "dog"], "the cat and dog\ncat only\ndog only\n");
     assert_eq!(out, "1:the cat and dog");
 }
 
@@ -939,64 +953,64 @@ fn show_scope_function() {
 
 #[test]
 fn fixed_strings_underscore() {
-    let (out, _) = run_stdin(&["-F", "a_b"], "a_b\naxb\nabc\n");
+    let (out, _) = run_stdin(&["-n", "-F", "a_b"], "a_b\naxb\nabc\n");
     assert_eq!(out, "1:a_b");
 }
 
 #[test]
 fn fixed_strings_ampersand() {
-    let (out, _) = run_stdin(&["-F", "a&b"], "a&b\nabc\n");
+    let (out, _) = run_stdin(&["-n", "-F", "a&b"], "a&b\nabc\n");
     assert_eq!(out, "1:a&b");
 }
 
 #[test]
 fn fixed_strings_tilde() {
-    let (out, _) = run_stdin(&["-F", "a~b"], "a~b\nabc\n");
+    let (out, _) = run_stdin(&["-n", "-F", "a~b"], "a~b\nabc\n");
     assert_eq!(out, "1:a~b");
 }
 
 #[test]
 fn fixed_strings_all_meta() {
-    let (out, _) = run_stdin(&["-F", "_&~"], "_&~\nabc\n");
+    let (out, _) = run_stdin(&["-n", "-F", "_&~"], "_&~\nabc\n");
     assert_eq!(out, "1:_&~");
 }
 
 #[test]
 fn fixed_strings_dot_and_underscore() {
-    let (out, _) = run_stdin(&["-F", "foo._bar"], "foo._bar\nfooXYbar\nfoo.Xbar\n");
+    let (out, _) = run_stdin(&["-n", "-F", "foo._bar"], "foo._bar\nfooXYbar\nfoo.Xbar\n");
     assert_eq!(out, "1:foo._bar");
 }
 
 #[test]
 fn raw_underscore_literal() {
     // in raw mode, _ should be literal, not resharp wildcard
-    let (out, _) = run_stdin(&["-R", "a_b"], "a_b\naxb\nabc\n");
+    let (out, _) = run_stdin(&["-n", "-R", "a_b"], "a_b\naxb\nabc\n");
     assert_eq!(out, "1:a_b");
 }
 
 #[test]
 fn raw_ampersand_literal() {
-    let (out, _) = run_stdin(&["-R", "a&b"], "a&b\nabc\n");
+    let (out, _) = run_stdin(&["-n", "-R", "a&b"], "a&b\nabc\n");
     assert_eq!(out, "1:a&b");
 }
 
 #[test]
 fn raw_tilde_literal() {
-    let (out, _) = run_stdin(&["-R", "a~b"], "a~b\nabc\n");
+    let (out, _) = run_stdin(&["-n", "-R", "a~b"], "a~b\nabc\n");
     assert_eq!(out, "1:a~b");
 }
 
 #[test]
 fn raw_regex_still_works() {
     // raw mode should still support standard regex
-    let (out, _) = run_stdin(&["-R", "a.b"], "a_b\naxb\nabc\n");
+    let (out, _) = run_stdin(&["-n", "-R", "a.b"], "a_b\naxb\nabc\n");
     assert_eq!(out, "1:a_b\n2:axb");
 }
 
 #[test]
 fn raw_backslash_preserved() {
     // \d should still work in raw mode
-    let (out, _) = run_stdin(&["-R", r"\d+_\d+"], "3_4\nabc\n12_34\n");
+    let (out, _) = run_stdin(&["-n", "-R", r"\d+_\d+"], "3_4\nabc\n12_34\n");
     assert_eq!(out, "1:3_4\n3:12_34");
 }
 
@@ -1930,4 +1944,18 @@ fn no_filename_single_file() {
     let (out_default, _) = run_args(&["foo", f.to_str().unwrap()]);
     let (out_h, _) = run_args(&["-h", "foo", f.to_str().unwrap()]);
     assert_eq!(out_default, out_h);
+}
+
+#[test]
+fn stdin_no_line_numbers_by_default() {
+    let (out, code) = run_stdin(&["--color", "never", "apple"], "apple\nbanana\napple pie\n");
+    assert_eq!(code, 0);
+    assert_eq!(out, "apple\napple pie");
+}
+
+#[test]
+fn stdin_line_numbers_with_flag() {
+    let (out, code) = run_stdin(&["-n", "--color", "never", "apple"], "apple\nbanana\napple pie\n");
+    assert_eq!(code, 0);
+    assert_eq!(out, "1:apple\n3:apple pie");
 }
