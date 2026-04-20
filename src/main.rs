@@ -110,7 +110,7 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
     let printer_opts = printer::PrinterOpts::from_args(&args);
 
     let scope_needs_files = args.scope.as_deref() == Some("file") || args.files_without_match;
-    if args.paths.is_empty() && !std::io::stdin().is_terminal() && !scope_needs_files {
+    if args.paths.is_empty() && is_readable_stdin() && !scope_needs_files {
         let (found, match_count) = search::search_stdin(
             &re,
             highlight_re.as_ref(),
@@ -146,6 +146,24 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
         print_stats(&stats, false);
     }
     Ok((found, errors, Some(stats)))
+}
+
+/// stdin is worth reading from only if it's a pipe/fifo or regular file.
+/// a tty, /dev/null, or other character device means "no stdin input"
+#[cfg(unix)]
+fn is_readable_stdin() -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    if std::io::stdin().is_terminal() {
+        return false;
+    }
+    let Ok(md) = std::fs::metadata("/dev/stdin") else { return false };
+    let ft = md.file_type();
+    ft.is_fifo() || ft.is_file() || ft.is_socket()
+}
+
+#[cfg(not(unix))]
+fn is_readable_stdin() -> bool {
+    !std::io::stdin().is_terminal()
 }
 
 fn print_stats(stats: &walk::Stats, file_list_mode: bool) {
