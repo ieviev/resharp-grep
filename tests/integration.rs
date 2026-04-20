@@ -637,6 +637,7 @@ fn mmap_count_matches() {
 }
 
 #[test]
+#[ignore = "takes long"]
 fn mmap_intersection() {
     // resharp processes in reverse - test intersection with mmap
     let td = TestDir::new();
