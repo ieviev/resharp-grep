@@ -727,7 +727,7 @@ fn quiet_exit_1() {
 fn find_all_no_trailing_newline_large_intersection() {
     let re = resharp::Regex::with_options(
         "(_*MATCH_*)&(_*secret_*)",
-        resharp::EngineOptions {
+        resharp::RegexOptions {
             dfa_threshold: 0,
             max_dfa_capacity: 65535,
             ..Default::default()
@@ -949,6 +949,97 @@ fn show_scope_function() {
     let (out, _) = run_stdin(&["--show-scope", "-n", "unwrap"], input);
     assert!(out.contains("fn outer()"));
     assert!(out.contains("unwrap"));
+}
+
+#[test]
+fn show_scope_rust_impl_method() {
+    // match inside an impl block's method - innermost (fn) wins, not the impl
+    let input = "impl Foo {\n    fn bar(&self) {\n        self.x.unwrap();\n    }\n}\n";
+    let (out, code) = run_stdin(&["--show-scope", "-n", "--color", "never", "unwrap"], input);
+    assert_eq!(code, 0);
+    assert!(out.contains("2:  fn bar(&self) {"), "out was:\n{out}");
+    assert!(out.contains("3:        self.x.unwrap();"), "out was:\n{out}");
+    assert!(!out.contains("impl Foo"), "should pick innermost scope, got:\n{out}");
+}
+
+#[test]
+fn show_scope_rust_pub_async_fn() {
+    let input = "pub async fn fetch() -> Result<()> {\n    client.send().await.unwrap();\n    Ok(())\n}\n";
+    let (out, code) = run_stdin(&["--show-scope", "--color", "never", "unwrap"], input);
+    assert_eq!(code, 0);
+    assert!(out.contains("pub async fn fetch() -> Result<()> {"), "out was:\n{out}");
+}
+
+#[test]
+fn show_scope_rust_pub_struct() {
+    let input = "pub struct Config {\n    pub timeout: u64,\n}\n";
+    let (out, code) = run_stdin(&["--show-scope", "--color", "never", "timeout"], input);
+    assert_eq!(code, 0);
+    assert!(out.contains("pub struct Config {"), "out was:\n{out}");
+}
+
+#[test]
+fn show_scope_rust_trait() {
+    let input = "pub trait Greeter {\n    fn hello(&self);\n    fn unwrap_world(&self);\n}\n";
+    let (out, code) = run_stdin(&["--show-scope", "--color", "never", "unwrap_world"], input);
+    assert_eq!(code, 0);
+    assert!(out.contains("pub trait Greeter {"), "out was:\n{out}");
+}
+
+#[test]
+fn show_scope_rust_enum() {
+    let input = "pub enum Op {\n    Add,\n    Unwrap,\n}\n";
+    let (out, code) = run_stdin(&["--show-scope", "--color", "never", "Unwrap"], input);
+    assert_eq!(code, 0);
+    assert!(out.contains("pub enum Op {"), "out was:\n{out}");
+}
+
+#[test]
+fn show_scope_rust_skips_blank_lines() {
+    // a blank line between the fn header and the match must not break scope detection
+    let input = "fn outer() {\n    let x = 1;\n\n    val.unwrap();\n}\n";
+    let (out, code) = run_stdin(&["--show-scope", "--color", "never", "unwrap"], input);
+    assert_eq!(code, 0);
+    assert!(out.contains("fn outer() {"), "out was:\n{out}");
+}
+
+#[test]
+fn show_scope_rust_dedupes_within_same_fn() {
+    // two matches in the same fn: scope header printed exactly once
+    let input = "fn process() {\n    a.unwrap();\n    b.unwrap();\n}\n";
+    let (out, code) = run_stdin(&["--show-scope", "-n", "--color", "never", "unwrap"], input);
+    assert_eq!(code, 0);
+    assert_eq!(out.matches("fn process()").count(), 1, "out was:\n{out}");
+    assert!(out.contains("2:    a.unwrap();"), "out was:\n{out}");
+    assert!(out.contains("3:    b.unwrap();"), "out was:\n{out}");
+}
+
+#[test]
+fn show_scope_rust_two_functions() {
+    // matches in two different fns: each scope header printed
+    let input = "fn alpha() {\n    a.unwrap();\n}\nfn beta() {\n    b.unwrap();\n}\n";
+    let (out, code) = run_stdin(&["--show-scope", "--color", "never", "unwrap"], input);
+    assert_eq!(code, 0);
+    assert_eq!(out.matches("fn alpha()").count(), 1, "out was:\n{out}");
+    assert_eq!(out.matches("fn beta()").count(), 1, "out was:\n{out}");
+}
+
+#[test]
+fn show_scope_rust_no_enclosing_scope() {
+    // top-level match with no enclosing scope marker: no scope header, but match still prints
+    let input = "let x = unwrap_me();\n";
+    let (out, code) = run_stdin(&["--show-scope", "-n", "--color", "never", "unwrap_me"], input);
+    assert_eq!(code, 0);
+    assert_eq!(out, "1:let x = unwrap_me();");
+}
+
+#[test]
+fn show_scope_rust_json_impl() {
+    let input = "impl Foo {\n    fn bar(&self) {\n        self.x.unwrap();\n    }\n}\n";
+    let (out, _) = run_stdin(&["--json", "--show-scope", "unwrap"], input);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["scope"], "fn bar(&self) {");
+    assert_eq!(v["line_number"], 3);
 }
 
 

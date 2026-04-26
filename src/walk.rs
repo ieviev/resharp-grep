@@ -97,6 +97,13 @@ fn build_walker(
     if !args.file_type.is_empty() || !args.type_not.is_empty() {
         let mut types = TypesBuilder::new();
         types.add_defaults();
+        let known: std::collections::HashSet<String> =
+            types.definitions().iter().map(|d| d.name().to_string()).collect();
+        for t in args.file_type.iter().chain(args.type_not.iter()) {
+            if !known.contains(t) {
+                types.add(t, &format!("*.{}", t))?;
+            }
+        }
         for t in &args.file_type {
             types.select(t);
         }

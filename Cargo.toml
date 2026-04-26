@@ -1,6 +1,6 @@
 [package]
 name = "resharp-grep"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2021"
 description = "recursive grep with boolean constraints and regex intersection"
 license = "MIT"
@@ -22,7 +22,7 @@ clap_complete = "4"
 ignore = "0.4"
 memchr = "2"
 memmap2 = "0.9"
-resharp = "0.4.2"
+resharp = "0.5.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 termcolor = "1"

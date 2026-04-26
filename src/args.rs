@@ -153,6 +153,14 @@ pub struct Args {
     #[arg(long = "iglob", value_name = "GLOB")]
     pub iglob: Vec<String>,
 
+    /// alias for -g GLOB (ripgrep/grep compatibility)
+    #[arg(long = "include", value_name = "GLOB", hide = true)]
+    pub include: Vec<String>,
+
+    /// alias for -g !GLOB (ripgrep/grep compatibility)
+    #[arg(long = "exclude", value_name = "GLOB", hide = true)]
+    pub exclude: Vec<String>,
+
     /// search only files matching TYPE
     #[arg(short = 't', long = "type", value_name = "TYPE")]
     pub file_type: Vec<String>,
@@ -330,8 +338,8 @@ impl Args {
         self.paragraphs.is_some()
     }
 
-    pub fn engine_opts(&self) -> resharp::EngineOptions {
-        resharp::EngineOptions {
+    pub fn engine_opts(&self) -> resharp::RegexOptions {
+        resharp::RegexOptions {
             dfa_threshold: self.dfa_threshold,
             max_dfa_capacity: self.dfa_capacity,
             ..Default::default()
@@ -749,6 +757,12 @@ impl Args {
 
 pub fn parse() -> anyhow::Result<Args> {
     let mut args = Args::parse();
+
+    // --include/--exclude are aliases for -g GLOB / -g !GLOB
+    args.glob.extend(std::mem::take(&mut args.include));
+    for g in std::mem::take(&mut args.exclude) {
+        args.glob.push(format!("!{g}"));
+    }
 
     // when -e/-f/-F is used or -p has words, positional PATTERN is a PATH
     let has_words = args.paragraphs.as_ref().map_or(false, |v| !v.is_empty())
