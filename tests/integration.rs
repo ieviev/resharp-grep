@@ -211,6 +211,82 @@ fn only_matching() {
 }
 
 #[test]
+fn only_matching_multiple_per_line_column() {
+    let (out, _) = run_stdin(&["-o", "--column", "foo"], "foo bar foo baz\n");
+    assert_eq!(out, "1:foo\n9:foo");
+}
+
+#[test]
+fn only_matching_multiple_per_line_byte_offset() {
+    let (out, _) = run_stdin(&["-o", "-b", "foo"], "foo bar foo baz\n");
+    assert_eq!(out, "0:foo\n8:foo");
+}
+
+#[test]
+fn only_matching_multiple_per_line_vimgrep() {
+    let (out, _) = run_stdin(&["-o", "--vimgrep", "foo"], "foo bar foo baz\n");
+    assert_eq!(out, "1:1:foo\n1:9:foo");
+}
+
+#[test]
+fn exclude_match_alone() {
+    let (out, _) = run_stdin(&["-o", "-E", "\""], "so I should investigate that.\",\"thinkingSignature\":\"EvsBClkIDBg\n");
+    assert!(out.contains("so I should investigate that."), "got: {out:?}");
+    assert!(out.contains("thinkingSignature"), "got: {out:?}");
+    assert!(out.contains("EvsBClkIDBg"), "got: {out:?}");
+    assert!(!out.contains('"'), "matches must not contain quote: {out:?}");
+}
+
+#[test]
+fn exclude_match_with_positive() {
+    // -a hello -a world: line must contain both. -E '"': within match span, no quotes.
+    // line 2 has hello and world but separated by quotes, so no quote-free span covers both.
+    let (out, _) = run_stdin(
+        &["-a", "hello", "-a", "world", "-E", "\""],
+        "hello world\nhello \"world\"\n",
+    );
+    assert_eq!(out, "hello world");
+}
+
+#[test]
+fn exclude_match_alternation_grouped() {
+    // -E with alternation must group the inner pattern - otherwise `a|b|c` wrapped as `_*a|b|c_*`
+    // parses as `_*a` | `b` | `c_*` and lets through anything containing one of the variants.
+    let input = "x.unwrap();\nx.unwrap_or(y);\nx.unwrap_err();\nx.unwrap_unchecked();\n";
+    let (out, _) = run_stdin(
+        &["-a", "\\.unwrap[a-z_]*\\(", "-E", "unwrap_or|unwrap_err|unwrap_unchecked"],
+        input,
+    );
+    assert_eq!(out, "x.unwrap();");
+}
+
+#[test]
+fn and_alternation_grouped() {
+    // -a with alternation must group similarly
+    let (out, _) = run_stdin(&["-a", "foo|bar"], "foo line\nbar line\nbaz line\n");
+    assert_eq!(out, "foo line\nbar line");
+}
+
+#[test]
+fn not_alternation_grouped() {
+    let (out, _) = run_stdin(&["_*", "-N", "aaa|ccc"], "aaa\nbbb\nccc\n");
+    assert_eq!(out, "bbb");
+}
+
+#[test]
+fn exclude_match_differs_from_not() {
+    // -N: whole line excluded if contains quote
+    let (out_n, _) = run_stdin(&["-N", "\"", "_*"], "aaa\n\"bbb\"\nccc\n");
+    assert_eq!(out_n, "aaa\nccc");
+    // -E: only match span must not contain quote (line still appears, just span is narrower)
+    let (out_e, _) = run_stdin(&["-o", "-E", "\"", "_*"], "aaa\n\"bbb\"\nccc\n");
+    assert!(out_e.contains("aaa"), "got: {out_e:?}");
+    assert!(out_e.contains("bbb"), "got: {out_e:?}");
+    assert!(out_e.contains("ccc"), "got: {out_e:?}");
+    assert!(!out_e.contains('"'), "got: {out_e:?}");
+}
+
+#[test]
 fn column() {
     let (out, _) = run_stdin(&["-n", "--column", "bar"], "foo bar baz\n");
     assert_eq!(out, "1:5:foo bar baz");

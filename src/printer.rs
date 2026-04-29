@@ -314,7 +314,7 @@ fn write_text_matches(
         if opts.only_matching {
             let line = get_line(buf, &line_starts, lm.line_number);
             for &(ms, me) in &lm.match_ranges {
-                print_prefix(&mut out, path, opts, lm, false)?;
+                print_prefix(&mut out, path, opts, lm, false, Some((ms, me)))?;
                 out.set_color(ColorSpec::new().set_fg(Some(Color::Red)).set_bold(true))?;
                 if let Some(ref repl) = opts.replace {
                     out.write_all(repl.as_bytes())?;
@@ -505,6 +505,7 @@ fn print_prefix(
     opts: &PrinterOpts,
     lm: &LineMatch,
     is_context: bool,
+    current_match: Option<(usize, usize)>,
 ) -> anyhow::Result<()> {
     let sep = if is_context { "-" } else { ":" };
 
@@ -524,16 +525,25 @@ fn print_prefix(
         write!(out, "{sep}")?;
     }
 
-    if opts.column && !lm.match_ranges.is_empty() {
-        out.set_color(ColorSpec::new().set_fg(Some(Color::Green)))?;
-        write!(out, "{}", lm.match_ranges[0].0 + 1)?;
-        out.reset()?;
-        write!(out, "{sep}")?;
+    let col = current_match
+        .map(|(ms, _)| ms)
+        .or_else(|| lm.match_ranges.first().map(|&(ms, _)| ms));
+    if opts.column {
+        if let Some(ms) = col {
+            out.set_color(ColorSpec::new().set_fg(Some(Color::Green)))?;
+            write!(out, "{}", ms + 1)?;
+            out.reset()?;
+            write!(out, "{sep}")?;
+        }
     }
 
     if opts.byte_offset {
+        let off = match current_match {
+            Some((ms, _)) => lm.line_start + ms,
+            None => lm.line_start,
+        };
         out.set_color(ColorSpec::new().set_fg(Some(Color::Green)))?;
-        write!(out, "{}", lm.line_start)?;
+        write!(out, "{}", off)?;
         out.reset()?;
         write!(out, "{sep}")?;
     }
@@ -653,7 +663,7 @@ fn print_match_line(
         return Ok(());
     }
 
-    print_prefix(out, path, opts, lm, false)?;
+    print_prefix(out, path, opts, lm, false, None)?;
 
     let raw_line = get_line(buf, line_starts, lm.line_number);
 
@@ -711,7 +721,7 @@ fn print_context_line(
         line_start: line_starts[line_idx],
         match_ranges: vec![],
     };
-    print_prefix(out, path, opts, &dummy, true)?;
+    print_prefix(out, path, opts, &dummy, true, None)?;
     let line = get_line(buf, line_starts, line_idx);
     if let Some(tw) = opts.trim_width {
         let pw = prefix_width(path, opts, &dummy);

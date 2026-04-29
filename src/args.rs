@@ -117,6 +117,10 @@ pub struct Args {
     #[arg(short = 'N', long = "not", value_name = "PATTERN")]
     pub not: Vec<String>,
 
+    /// exclude PATTERN from match body itself (no scope anchoring, repeatable)
+    #[arg(short = 'E', long = "exclude-match", value_name = "PATTERN")]
+    pub exclude_match: Vec<String>,
+
     /// replace matches with TEXT in output
     #[arg(long = "replace", value_name = "TEXT")]
     pub replace: Option<String>,
@@ -407,7 +411,13 @@ impl Args {
         if patterns.is_empty() {
             match &self.pattern {
                 Some(p) => patterns.push(p.clone()),
-                None => anyhow::bail!("no pattern provided"),
+                None => {
+                    if self.exclude_match.is_empty() {
+                        anyhow::bail!("no pattern provided");
+                    }
+                    // -E alone: body defaults to _*, narrowed by apply_excludes
+                    patterns.push("_*".to_string());
+                }
             }
         }
 
@@ -435,6 +445,9 @@ impl Args {
         if self.near.is_some() && self.and.is_empty() {
             anyhow::bail!("--near requires at least 2 terms (use -W, --and, or & in pattern)");
         }
+
+        // apply -E body excludes (no scope anchoring)
+        let combined = self.apply_excludes(combined);
 
         // apply scope boundary
         let combined = self.apply_scope_boundary(combined);
@@ -514,7 +527,21 @@ impl Args {
             combined = format!("^({combined})$");
         }
 
+        let combined = self.apply_excludes(combined);
+
         (self.apply_scope_boundary(combined), file_nots)
+    }
+
+    fn apply_excludes(&self, combined: String) -> String {
+        if self.exclude_match.is_empty() {
+            return combined;
+        }
+        let mut combined = combined;
+        for e in &self.exclude_match {
+            let term = self.wrap_pattern(e.clone(), Some("_*"));
+            combined = format!("({combined})&~{term}");
+        }
+        combined
     }
 
     fn apply_and_not(&self, mut combined: String) -> (String, Vec<String>) {
@@ -609,7 +636,8 @@ impl Args {
         if let Some(w) = wild {
             let prefix = if pattern.starts_with('^') { "" } else { w };
             let suffix = if pattern.ends_with('$') { "" } else { w };
-            pattern = format!("({prefix}{pattern}{suffix})");
+            // inner parens guard against alternation binding across the wildcards (e.g. a|b -> _*(a|b)_*)
+            pattern = format!("({prefix}({pattern}){suffix})");
         }
 
         pattern

@@ -58,9 +58,20 @@ re -F 'std::io' -F 'Error' src/
 | flag | effect | compiles to |
 |------|--------|-------------|
 | `-a` / `--and` | match must also contain this pattern | `&(_*pattern_*)` |
-| `-N` / `--not` | match must not contain this pattern | `&~(_*pattern_*)` |
+| `-N` / `--not` | drop the line/scope if it contains this pattern | `&~(_*pattern_*)` anchored to scope |
 | `-e` | union - match any of the patterns | `(pat1)\|(pat2)` |
 | `-F` / `--lit` | match must contain this literal string | `&(_*literal_*)` |
+
+## carving the match span: `-E`
+
+`-E PAT` narrows the match span around PAT instead of dropping the line. only useful with `-o` for splitting a line at a delimiter; for filtering use `-N`.
+
+```sh
+$ printf 'a,b,c\n' | re -o -E ','
+a
+b
+c
+```
 
 ## scope
 

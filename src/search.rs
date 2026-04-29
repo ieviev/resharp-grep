@@ -78,6 +78,18 @@ pub fn search_buffer(
         if m.start == m.end && m.start == buf.len() {
             continue; // skip end-of-input empty match
         }
+        // skip zero-width match if previous match ended at this position (find_all stutter on _*/.*)
+        if m.start == m.end {
+            if let Some(last) = line_matches.last() {
+                if let Some(&(_, last_me)) = last.match_ranges.last() {
+                    if last.line_number == offset_to_line(&line_starts, m.start)
+                        && last.line_start + last_me == m.start
+                    {
+                        continue;
+                    }
+                }
+            }
+        }
         let start_line = offset_to_line(&line_starts, m.start);
         let end_line = if m.end > m.start {
             offset_to_line(&line_starts, m.end.saturating_sub(1))
