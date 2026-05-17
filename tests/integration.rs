@@ -804,8 +804,6 @@ fn find_all_no_trailing_newline_large_intersection() {
     let re = resharp::Regex::with_options(
         "(_*MATCH_*)&(_*secret_*)",
         resharp::RegexOptions {
-            dfa_threshold: 0,
-            max_dfa_capacity: 65535,
             ..Default::default()
         },
     ).unwrap();

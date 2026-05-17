@@ -237,14 +237,6 @@ pub struct Args {
     #[arg(long = "no-mmap")]
     pub no_mmap: bool,
 
-    /// max DFA state capacity (default: 65535)
-    #[arg(long = "dfa-capacity", value_name = "NUM", default_value = "65535")]
-    pub dfa_capacity: usize,
-
-    /// DFA precompilation threshold (default: 0)
-    #[arg(long = "dfa-threshold", value_name = "NUM", default_value = "0")]
-    pub dfa_threshold: usize,
-
     /// generate shell completions (bash, zsh, fish, elvish, powershell)
     #[arg(long = "completions", value_name = "SHELL", hide = true)]
     pub completions: Option<clap_complete::Shell>,
@@ -344,8 +336,6 @@ impl Args {
 
     pub fn engine_opts(&self) -> resharp::RegexOptions {
         resharp::RegexOptions {
-            dfa_threshold: self.dfa_threshold,
-            max_dfa_capacity: self.dfa_capacity,
             ..Default::default()
         }
     }
