@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::io::IsTerminal;
 
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
@@ -14,19 +13,14 @@ pub struct PrinterOpts {
     pub count: bool,
     pub files_with_matches: bool,
     pub files_without_match: bool,
-    pub column: bool,
-    pub byte_offset: bool,
     pub before_ctx: usize,
     pub after_ctx: usize,
     pub replace: Option<String>,
     pub json: bool,
-    pub unique: bool,
     pub show_scope: bool,
     pub null: bool,
-    pub trim_width: Option<usize>,
     pub vimgrep: bool,
-    pub max_columns: Option<usize>,
-    pub context_separator: String,
+    pub multiline_scope: bool,
 }
 
 impl PrinterOpts {
@@ -44,19 +38,14 @@ impl PrinterOpts {
                 count: false,
                 files_with_matches: false,
                 files_without_match: false,
-                column: true,
-                byte_offset: false,
                 before_ctx: 0,
                 after_ctx: 0,
                 replace: args.replace.clone(),
                 json: false,
-                unique: args.unique,
                 show_scope: false,
                 null: false,
-                trim_width: None,
                 vimgrep: true,
-                max_columns: args.max_columns,
-                context_separator: String::new(),
+                multiline_scope: args.is_multiline_scope(),
             };
         }
 
@@ -68,23 +57,14 @@ impl PrinterOpts {
             count: args.count,
             files_with_matches: args.files_with_matches,
             files_without_match: args.files_without_match,
-            column: args.column,
-            byte_offset: args.byte_offset,
             before_ctx: args.before_ctx(),
             after_ctx: args.after_ctx(),
             replace: args.replace.clone(),
             json: args.json,
-            unique: args.unique,
             show_scope: args.show_scope,
             null: args.null,
-            trim_width: if args.trim {
-                Some(detect_terminal_width())
-            } else {
-                None
-            },
             vimgrep: false,
-            max_columns: args.max_columns,
-            context_separator: args.context_separator.clone(),
+            multiline_scope: args.is_multiline_scope(),
         }
     }
 }
@@ -96,8 +76,6 @@ struct JsonMatchLine {
     line_number: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     column: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    byte_offset: Option<usize>,
     lines: String,
     submatches: Vec<JsonSubmatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -112,56 +90,39 @@ struct JsonSubmatch {
     end: usize,
 }
 
+#[derive(serde::Serialize)]
+struct JsonMatchSpan {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    line_number: usize,
+    column: usize,
+    absolute_offset: usize,
+    #[serde(rename = "match")]
+    match_text: String,
+}
+
 pub fn print_results(
     buf: &[u8],
     matches: &[LineMatch],
+    raw_matches: &[(usize, usize)],
     path: Option<&str>,
     opts: &PrinterOpts,
     color_choice: ColorChoice,
 ) -> anyhow::Result<()> {
     let mut out = StandardStream::stdout(color_choice);
-    write_results_with_unique(&mut out, buf, matches, path, opts, None)
+    write_results(&mut out, buf, matches, raw_matches, path, opts)
 }
 
-pub struct UniqueSet {
-    seen: HashSet<Vec<u8>>,
-}
-
-impl UniqueSet {
-    pub fn new() -> Self {
-        Self { seen: HashSet::new() }
-    }
-
-    fn check(&mut self, key: &[u8]) -> bool {
-        if self.seen.contains(key) {
-            false
-        } else {
-            self.seen.insert(key.to_vec());
-            true
-        }
-    }
-}
-
-pub fn write_results_with_unique(
+pub fn write_results(
     out: &mut dyn WriteColor,
     buf: &[u8],
     matches: &[LineMatch],
+    raw_matches: &[(usize, usize)],
     path: Option<&str>,
     opts: &PrinterOpts,
-    unique_set: Option<&mut UniqueSet>,
 ) -> anyhow::Result<()> {
-    let mut local_set = if opts.unique && unique_set.is_none() {
-        Some(UniqueSet::new())
-    } else {
-        None
-    };
-    let unique_set = match unique_set {
-        Some(us) => Some(us),
-        None => local_set.as_mut(),
-    };
-
     if opts.json {
-        return write_json_results(out, buf, matches, path, opts, unique_set);
+        return write_json_results(out, buf, matches, raw_matches, path, opts);
     }
 
     if opts.files_without_match || opts.files_with_matches {
@@ -169,10 +130,11 @@ pub fn write_results_with_unique(
     }
 
     if opts.count {
-        return write_count_mode(out, matches, path);
+        let n = if opts.multiline_scope { raw_matches.len() } else { matches.len() };
+        return write_count_mode(out, n, path);
     }
 
-    write_text_matches(out, buf, matches, path, opts, unique_set)
+    write_text_matches(out, buf, matches, path, opts)
 }
 
 fn write_file_mode(
@@ -200,10 +162,10 @@ fn write_file_mode(
 
 fn write_count_mode(
     out: &mut dyn WriteColor,
-    matches: &[LineMatch],
+    count: usize,
     path: Option<&str>,
 ) -> anyhow::Result<()> {
-    if matches.is_empty() {
+    if count == 0 {
         return Ok(());
     }
     if let Some(p) = path {
@@ -212,7 +174,7 @@ fn write_count_mode(
         out.reset()?;
         write!(out, ":")?;
     }
-    writeln!(out, "{}", matches.len())?;
+    writeln!(out, "{}", count)?;
     Ok(())
 }
 
@@ -222,7 +184,6 @@ fn write_text_matches(
     matches: &[LineMatch],
     path: Option<&str>,
     opts: &PrinterOpts,
-    mut unique_set: Option<&mut UniqueSet>,
 ) -> anyhow::Result<()> {
     if matches.is_empty() {
         return Ok(());
@@ -250,28 +211,6 @@ fn write_text_matches(
     let mut last_scope_line: Option<usize> = None;
 
     for lm in matches {
-        if opts.unique {
-            let line = get_line(buf, &line_starts, lm.line_number);
-            let key = if opts.only_matching && !lm.match_ranges.is_empty() {
-                let (ms, me) = lm.match_ranges[0];
-                &line[ms.min(line.len())..me.min(line.len())]
-            } else {
-                line
-            };
-            if let Some(us) = unique_set.as_mut() {
-                if !us.check(key) {
-                    continue;
-                }
-            }
-        }
-
-        if let Some(max_col) = opts.max_columns {
-            let line = get_line(buf, &line_starts, lm.line_number);
-            if line.len() > max_col {
-                continue;
-            }
-        }
-
         if opts.show_scope {
             if let Some((scope_line, scope_text)) = find_enclosing_scope(buf, &line_starts, lm.line_number) {
                 if last_scope_line != Some(scope_line) {
@@ -299,8 +238,8 @@ fn write_text_matches(
 
         if has_context {
             if let Some(last) = last_printed_line {
-                if ctx_start > last + 1 && !opts.context_separator.is_empty() {
-                    writeln!(out, "{}", opts.context_separator)?;
+                if ctx_start > last + 1 {
+                    writeln!(out, "--")?;
                 }
             }
             for line_idx in ctx_start..lm.line_number {
@@ -311,7 +250,7 @@ fn write_text_matches(
             }
         }
 
-        if opts.only_matching {
+        if opts.only_matching && !opts.vimgrep {
             let line = get_line(buf, &line_starts, lm.line_number);
             for &(ms, me) in &lm.match_ranges {
                 print_prefix(&mut out, path, opts, lm, false, Some((ms, me)))?;
@@ -346,9 +285,9 @@ fn write_json_results(
     out: &mut dyn WriteColor,
     buf: &[u8],
     matches: &[LineMatch],
+    raw_matches: &[(usize, usize)],
     path: Option<&str>,
     opts: &PrinterOpts,
-    mut unique_set: Option<&mut UniqueSet>,
 ) -> anyhow::Result<()> {
     if opts.files_without_match {
         if matches.is_empty() {
@@ -384,23 +323,24 @@ fn write_json_results(
 
     let line_starts = search::build_line_index(buf);
 
+    if opts.multiline_scope {
+        for &(ms, me) in raw_matches {
+            let (start_line, start_col) = offset_to_line_col(&line_starts, ms);
+            let obj = JsonMatchSpan {
+                path: path.map(|s| s.to_string()),
+                line_number: start_line + 1,
+                column: start_col,
+                absolute_offset: line_starts[start_line],
+                match_text: String::from_utf8_lossy(&buf[ms..me]).into_owned(),
+            };
+            writeln!(out, "{}", serde_json::to_string(&obj)?)?;
+        }
+        return Ok(());
+    }
+
     for lm in matches {
         let line = get_line(buf, &line_starts, lm.line_number);
         let line_text = String::from_utf8_lossy(line).into_owned();
-
-        if opts.unique {
-            let key = if opts.only_matching && !lm.match_ranges.is_empty() {
-                let (ms, me) = lm.match_ranges[0];
-                &line[ms.min(line.len())..me.min(line.len())]
-            } else {
-                line
-            };
-            if let Some(ref mut us) = unique_set {
-                if !us.check(key) {
-                    continue;
-                }
-            }
-        }
 
         let submatches: Vec<JsonSubmatch> = lm.match_ranges.iter().map(|&(ms, me)| {
             let ms = ms.min(line.len());
@@ -413,7 +353,6 @@ fn write_json_results(
         }).collect();
 
         let column = lm.match_ranges.first().map(|&(ms, _)| ms + 1);
-        let byte_offset = if opts.byte_offset { Some(lm.line_start) } else { None };
 
         let scope = if opts.show_scope {
             find_enclosing_scope(buf, &line_starts, lm.line_number)
@@ -426,7 +365,6 @@ fn write_json_results(
             path: path.map(|s| s.to_string()),
             line_number: lm.line_number + 1,
             column,
-            byte_offset,
             lines: line_text,
             submatches,
             scope,
@@ -436,6 +374,14 @@ fn write_json_results(
     }
 
     Ok(())
+}
+
+fn offset_to_line_col(line_starts: &[usize], offset: usize) -> (usize, usize) {
+    let line = match line_starts.binary_search(&offset) {
+        Ok(i) => i,
+        Err(i) => i.saturating_sub(1),
+    };
+    (line, offset - line_starts[line] + 1)
 }
 
 fn get_line<'a>(buf: &'a [u8], line_starts: &[usize], line_idx: usize) -> &'a [u8] {
@@ -505,7 +451,7 @@ fn print_prefix(
     opts: &PrinterOpts,
     lm: &LineMatch,
     is_context: bool,
-    current_match: Option<(usize, usize)>,
+    _current_match: Option<(usize, usize)>,
 ) -> anyhow::Result<()> {
     let sep = if is_context { "-" } else { ":" };
 
@@ -525,122 +471,7 @@ fn print_prefix(
         write!(out, "{sep}")?;
     }
 
-    let col = current_match
-        .map(|(ms, _)| ms)
-        .or_else(|| lm.match_ranges.first().map(|&(ms, _)| ms));
-    if opts.column {
-        if let Some(ms) = col {
-            out.set_color(ColorSpec::new().set_fg(Some(Color::Green)))?;
-            write!(out, "{}", ms + 1)?;
-            out.reset()?;
-            write!(out, "{sep}")?;
-        }
-    }
-
-    if opts.byte_offset {
-        let off = match current_match {
-            Some((ms, _)) => lm.line_start + ms,
-            None => lm.line_start,
-        };
-        out.set_color(ColorSpec::new().set_fg(Some(Color::Green)))?;
-        write!(out, "{}", off)?;
-        out.reset()?;
-        write!(out, "{sep}")?;
-    }
-
     Ok(())
-}
-
-fn detect_terminal_width() -> usize {
-    if let Ok(cols) = std::env::var("COLUMNS") {
-        if let Ok(n) = cols.parse::<usize>() {
-            if n > 0 { return n; }
-        }
-    }
-    #[cfg(unix)]
-    {
-        #[repr(C)]
-        struct Winsize { ws_row: u16, ws_col: u16, ws_xpixel: u16, ws_ypixel: u16 }
-        extern "C" {
-            fn ioctl(fd: std::ffi::c_int, request: std::ffi::c_ulong, ...) -> std::ffi::c_int;
-        }
-        #[cfg(target_os = "linux")]
-        const TIOCGWINSZ: std::ffi::c_ulong = 0x5413;
-        #[cfg(target_os = "macos")]
-        const TIOCGWINSZ: std::ffi::c_ulong = 0x40087468;
-
-        let mut ws = Winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
-        let ret = unsafe { ioctl(2, TIOCGWINSZ, &mut ws as *mut Winsize) };
-        if ret == 0 && ws.ws_col > 0 {
-            return ws.ws_col as usize;
-        }
-    }
-    120
-}
-
-fn prefix_width(path: Option<&str>, opts: &PrinterOpts, lm: &LineMatch) -> usize {
-    let mut w = 0;
-    if opts.show_path {
-        if let Some(p) = path {
-            w += p.len() + 1;
-        }
-    }
-    if opts.line_number {
-        w += count_digits(lm.line_number + 1) + 1;
-    }
-    if opts.column && !lm.match_ranges.is_empty() {
-        w += count_digits(lm.match_ranges[0].0 + 1) + 1;
-    }
-    if opts.byte_offset {
-        w += count_digits(lm.line_start) + 1;
-    }
-    w
-}
-
-fn count_digits(mut n: usize) -> usize {
-    if n == 0 { return 1; }
-    let mut count = 0;
-    while n > 0 { count += 1; n /= 10; }
-    count
-}
-
-fn trim_line<'a>(
-    line: &'a [u8],
-    match_ranges: &[(usize, usize)],
-    max_width: usize,
-) -> (&'a [u8], Vec<(usize, usize)>, bool, bool) {
-    if max_width < 4 || line.len() <= max_width {
-        return (line, match_ranges.to_vec(), false, false);
-    }
-
-    let first_match_end = match_ranges.first().map(|&(_, e)| e).unwrap_or(0);
-
-    if first_match_end < max_width.saturating_sub(1) {
-        let end = max_width - 1;
-        let trimmed = &line[..end.min(line.len())];
-        let adjusted = adjust_match_ranges(match_ranges, 0, end);
-        (trimmed, adjusted, false, true)
-    } else {
-        let first_match_start = match_ranges.first().map(|&(s, _)| s).unwrap_or(0);
-        let context = max_width / 4;
-        let start = first_match_start.saturating_sub(context);
-        let has_left = start > 0;
-        let usable = max_width.saturating_sub(if has_left { 2 } else { 1 });
-        let end = (start + usable).min(line.len());
-        let has_right = end < line.len();
-        let trimmed = &line[start..end];
-        let adjusted = adjust_match_ranges(match_ranges, start, end);
-        (trimmed, adjusted, has_left, has_right)
-    }
-}
-
-fn adjust_match_ranges(ranges: &[(usize, usize)], offset: usize, end: usize) -> Vec<(usize, usize)> {
-    ranges.iter()
-        .filter_map(|&(ms, me)| {
-            if me <= offset || ms >= end { return None; }
-            Some((ms.max(offset) - offset, me.min(end) - offset))
-        })
-        .collect()
 }
 
 fn print_match_line(
@@ -654,11 +485,16 @@ fn print_match_line(
     if opts.vimgrep && !lm.match_ranges.is_empty() {
         let line = get_line(buf, line_starts, lm.line_number);
         let line_text = String::from_utf8_lossy(line);
-        for &(ms, _) in &lm.match_ranges {
+        for &(ms, me) in &lm.match_ranges {
             if let Some(p) = path {
                 write!(out, "{p}:")?;
             }
-            writeln!(out, "{}:{}:{}", lm.line_number + 1, ms + 1, line_text)?;
+            let text = if opts.only_matching {
+                String::from_utf8_lossy(&line[ms.min(line.len())..me.min(line.len())]).into_owned()
+            } else {
+                line_text.to_string()
+            };
+            writeln!(out, "{}:{}:{}", lm.line_number + 1, ms + 1, text)?;
         }
         return Ok(());
     }
@@ -667,15 +503,8 @@ fn print_match_line(
 
     let raw_line = get_line(buf, line_starts, lm.line_number);
 
-    let trimmed;
-    let (line, match_ranges, left_ell, right_ell) = if let Some(tw) = opts.trim_width {
-        let pw = prefix_width(path, opts, lm);
-        let (l, r, le, re) = trim_line(raw_line, &lm.match_ranges, tw.saturating_sub(pw));
-        trimmed = r;
-        (l, trimmed.as_slice(), le, re)
-    } else {
-        (raw_line, lm.match_ranges.as_slice(), false, false)
-    };
+    let (line, match_ranges) = (raw_line, lm.match_ranges.as_slice());
+    let (left_ell, right_ell) = (false, false);
 
     if left_ell { write!(out, "\u{2026}")?; }
 
@@ -723,18 +552,7 @@ fn print_context_line(
     };
     print_prefix(out, path, opts, &dummy, true, None)?;
     let line = get_line(buf, line_starts, line_idx);
-    if let Some(tw) = opts.trim_width {
-        let pw = prefix_width(path, opts, &dummy);
-        let avail = tw.saturating_sub(pw);
-        if line.len() > avail && avail > 1 {
-            out.write_all(&line[..avail - 1])?;
-            write!(out, "\u{2026}")?;
-        } else {
-            out.write_all(line)?;
-        }
-    } else {
-        out.write_all(line)?;
-    }
+    out.write_all(line)?;
     writeln!(out)?;
     Ok(())
 }

@@ -9,7 +9,7 @@ use ignore::WalkBuilder;
 use termcolor::{BufferWriter, ColorSpec, WriteColor};
 
 use crate::args::Args;
-use crate::printer::{self, PrinterOpts};
+use crate::printer::PrinterOpts;
 use crate::search;
 
 #[derive(Default)]
@@ -45,7 +45,7 @@ pub fn walk_and_search(
     let max_filesize = args.parse_max_filesize()?;
     let sorted = args.sort.as_deref() == Some("path");
 
-    let use_parallel = !sorted && !args.unique && args.head.is_none() && args.offset.is_none() && match args.threads {
+    let use_parallel = !sorted && args.head.is_none() && args.offset.is_none() && match args.threads {
         Some(n) => n > 1,
         None => std::thread::available_parallelism().map_or(false, |n| n.get() > 1),
     };
@@ -78,15 +78,7 @@ fn build_walker(
         builder.git_global(false);
         builder.git_exclude(false);
     }
-    if args.no_ignore_vcs {
-        builder.git_ignore(false);
-        builder.git_global(false);
-        builder.git_exclude(false);
-    }
-    for path in &args.ignore_file {
-        builder.add_ignore(path);
-    }
-    builder.follow_links(args.follow);
+
     if let Some(depth) = args.max_depth {
         builder.max_depth(Some(depth));
     }
@@ -113,13 +105,10 @@ fn build_walker(
         builder.types(types.build()?);
     }
 
-    if !args.glob.is_empty() || !args.iglob.is_empty() {
+    if !args.glob.is_empty() {
         let mut overrides = OverrideBuilder::new(".");
         for g in &args.glob {
             overrides.add(g)?;
-        }
-        for g in &args.iglob {
-            overrides.case_insensitive(true)?.add(g)?;
         }
         builder.overrides(overrides.build()?);
     }
@@ -151,7 +140,7 @@ fn walk_sequential(
     let mut found_any = false;
     let mut had_errors = false;
     let mut stats = Stats::default();
-    let mut unique_set = if args.unique { Some(printer::UniqueSet::new()) } else { None };
+
     let mut head_remaining = args.head;
     let mut offset_remaining = args.offset.unwrap_or(0);
     let mut truncated = false;
@@ -166,8 +155,9 @@ fn walk_sequential(
         let mut buf = bufwtr.buffer();
         let (found, had_error, count, lines) = search::search_file_to_writer(
             re, highlight_re, not_res, path, args, printer_opts, &mut buf,
-            effective_max, unique_set.as_mut(),
-        )?;
+            effective_max,
+        )?
+;
 
         stats.total_lines += lines;
         if had_error { had_errors = true; }
@@ -262,7 +252,7 @@ fn process_parallel_entry(
     files_searched.fetch_add(1, Ordering::Relaxed);
     let effective_max = args.effective_max(total_matches.load(Ordering::Relaxed));
     let mut buf = bufwtr.buffer();
-    match search::search_file_to_writer(re, highlight_re, not_res, entry.path(), args, printer_opts, &mut buf, effective_max, None) {
+    match search::search_file_to_writer(re, highlight_re, not_res, entry.path(), args, printer_opts, &mut buf, effective_max) {
         Ok((found, had_error, count, lines)) => {
             total_lines.fetch_add(lines, Ordering::Relaxed);
             if had_error { had_errors.store(true, Ordering::Relaxed); }

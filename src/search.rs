@@ -12,6 +12,9 @@ pub struct LineMatch {
 
 pub struct SearchResult {
     pub matches: Vec<LineMatch>,
+    /// raw (start, end) byte offsets of every engine match, pre-line-decomposition.
+    /// used by --json in multi-line scopes to emit exact spans.
+    pub raw_matches: Vec<(usize, usize)>,
     pub match_count: usize,
     pub had_error: bool,
 }
@@ -55,6 +58,7 @@ pub fn search_buffer(
     if buf.is_empty() {
         return SearchResult {
             matches: vec![],
+            raw_matches: vec![],
             match_count: 0,
             had_error: false,
         };
@@ -65,6 +69,7 @@ pub fn search_buffer(
         Err(_) => {
             return SearchResult {
                 matches: vec![],
+                raw_matches: vec![],
                 match_count: 0,
                 had_error: true,
             };
@@ -73,6 +78,7 @@ pub fn search_buffer(
 
     let line_starts = build_line_index(buf);
     let mut line_matches: Vec<LineMatch> = Vec::new();
+    let mut raw_matches: Vec<(usize, usize)> = Vec::with_capacity(all_matches.len());
 
     for m in &all_matches {
         if m.start == m.end && m.start == buf.len() {
@@ -90,6 +96,7 @@ pub fn search_buffer(
                 }
             }
         }
+        raw_matches.push((m.start, m.end));
         let start_line = offset_to_line(&line_starts, m.start);
         let end_line = if m.end > m.start {
             offset_to_line(&line_starts, m.end.saturating_sub(1))
@@ -139,11 +146,11 @@ pub fn search_buffer(
     }
 
     if args.invert_match {
-        let matched_lines: std::collections::HashSet<usize> =
+        let matched: std::collections::HashSet<usize> =
             line_matches.iter().map(|m| m.line_number).collect();
-        let mut inverted = Vec::new();
+        let mut inverted = Vec::with_capacity(line_starts.len().saturating_sub(matched.len()));
         for (i, &ls) in line_starts.iter().enumerate() {
-            if !matched_lines.contains(&i) {
+            if !matched.contains(&i) {
                 inverted.push(LineMatch {
                     line_number: i,
                     line_start: ls,
@@ -151,49 +158,25 @@ pub fn search_buffer(
                 });
             }
         }
-        let count = inverted.len();
-        return SearchResult {
-            matches: inverted,
-            match_count: count,
-            had_error: false,
-        };
+        line_matches = inverted;
+        raw_matches.clear();
     }
 
     let max = effective_max.or(args.max_count);
     if let Some(max) = max {
         line_matches.truncate(max);
+        raw_matches.truncate(max);
     }
 
-    let match_count = line_matches.len();
-
-    if args.passthru {
-        let mut all_lines = Vec::with_capacity(line_starts.len());
-        let mut mi = 0;
-        for (i, &ls) in line_starts.iter().enumerate() {
-            if mi < line_matches.len() && line_matches[mi].line_number == i {
-                all_lines.push(LineMatch {
-                    line_number: i,
-                    line_start: ls,
-                    match_ranges: std::mem::take(&mut line_matches[mi].match_ranges),
-                });
-                mi += 1;
-            } else {
-                all_lines.push(LineMatch {
-                    line_number: i,
-                    line_start: ls,
-                    match_ranges: vec![],
-                });
-            }
-        }
-        return SearchResult {
-            matches: all_lines,
-            match_count,
-            had_error: false,
-        };
-    }
+    let match_count = if args.is_multiline_scope() {
+        raw_matches.len()
+    } else {
+        line_matches.len()
+    };
 
     SearchResult {
         matches: line_matches,
+        raw_matches,
         match_count,
         had_error: false,
     }
@@ -253,7 +236,6 @@ pub fn search_file_to_writer(
     printer_opts: &PrinterOpts,
     out: &mut dyn termcolor::WriteColor,
     effective_max: Option<usize>,
-    unique_set: Option<&mut printer::UniqueSet>,
 ) -> anyhow::Result<(bool, bool, usize, usize)> {
     let data = read_file(path, args)?;
     let buf = data.as_ref();
@@ -277,12 +259,12 @@ pub fn search_file_to_writer(
     let match_count = result.match_count;
     let found = match_count > 0;
 
-    if args.quiet || args.count_matches {
+    if args.quiet {
         return Ok((found, false, match_count, line_count));
     }
 
     let path_str = Some(path.to_string_lossy().into_owned());
-    printer::write_results_with_unique(out, buf, &result.matches, path_str.as_deref(), printer_opts, unique_set)?;
+    printer::write_results(out, buf, &result.matches, &result.raw_matches, path_str.as_deref(), printer_opts)?;
 
     Ok((found, false, match_count, line_count))
 }
@@ -366,11 +348,11 @@ pub fn search_stdin(
     let match_count = result.match_count;
     let found = match_count > 0;
 
-    if !args.quiet && !args.count_matches {
+    if !args.quiet {
         if args.head.is_some() || args.offset.is_some() {
             let bufwtr = termcolor::BufferWriter::stdout(color_choice);
             let mut out_buf = bufwtr.buffer();
-            printer::write_results_with_unique(&mut out_buf, &stdin_buf, &result.matches, None, printer_opts, None)?;
+            printer::write_results(&mut out_buf, &stdin_buf, &result.matches, &result.raw_matches, None, printer_opts)?;
             let output = out_buf.as_slice();
 
             let mut offset_remaining = args.offset.unwrap_or(0);
@@ -384,7 +366,7 @@ pub fn search_stdin(
                 eprintln!("... [truncated at {} lines]", args.head.unwrap());
             }
         } else {
-            printer::print_results(&stdin_buf, &result.matches, None, printer_opts, color_choice)?;
+            printer::print_results(&stdin_buf, &result.matches, &result.raw_matches, None, printer_opts, color_choice)?;
         }
     }
 

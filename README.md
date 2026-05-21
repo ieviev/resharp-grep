@@ -14,16 +14,16 @@ re --near 5 --and unsafe --and unwrap src/
 re error --not debug --not trace src/
 
 # list files that use both tokio and diesel - mixed async/sync code
-re --scope file --and tokio --and diesel src/
+re -f -a tokio -a diesel src/
 
 # find paragraphs that mention both password and plaintext - credential exposure
 re -p password -p plaintext .
 
 # search within YAML sections for entries that have both host and port
-re --scope '---' --and host --and port config/
+re -s '---' --and host --and port config/   # -s is --scope-re
 
 # find markdown sections that discuss both API and deprecation
-re --scope '\n## ' --and API --and deprecated docs/
+re -s '\n## ' --and API --and deprecated docs/
 ```
 
 with grep, each of these would require chaining multiple commands and losing file context, line numbers, and highlighting. `re` does it in one shot, and faster than any other tool out there.
@@ -62,12 +62,12 @@ re -F 'std::io' -F 'Error' src/
 | `-e` | union - match any of the patterns | `(pat1)\|(pat2)` |
 | `-F` / `--lit` | match must contain this literal string | `&(_*literal_*)` |
 
-## carving the match span: `-E`
+## carving the match span: `-d`
 
-`-E PAT` narrows the match span around PAT instead of dropping the line. only useful with `-o` for splitting a line at a delimiter; for filtering use `-N`.
+`-d PAT` treats PAT as a delimiter: the match span cannot contain it. useful with `-o` for splitting a line; for filtering whole lines use `-N`.
 
 ```sh
-$ printf 'a,b,c\n' | re -o -E ','
+$ printf 'a,b,c\n' | re -o -d ','
 a
 b
 c
@@ -75,25 +75,25 @@ c
 
 ## scope
 
-by default, all terms must appear on the same line. `-d` (delimiter/scope) widens the window.
+by default, all terms must appear on the same line. `--scope` widens the window.
 
 | scope | flag | terms must appear within |
 |-------|------|--------------------------|
 | line | (default) | a single line |
 | paragraph | `-p` | a text block separated by blank lines |
-| file | `-d file` | anywhere in the same file (lists filenames) |
+| file | `-f` | anywhere in the same file (lists filenames) |
 | proximity | `--near N` | N lines of each other |
-| custom | `-d '<delim>'` | text between occurrences of the delimiter |
+| custom | `--scope-re '<delim>'` | text between occurrences of the delimiter regex |
 
 ```sh
 # find text blocks that mention both "error" and "retry"
 re -p error -p retry logs/
 
 # list files that import both serde and async-trait
-re -d file -a serde -a async-trait src/
+re -f -a serde -a async-trait src/
 
 # find markdown sections discussing both API and deprecation
-re -d '\n## ' -a API -a deprecated docs/
+re -s '\n## ' -a API -a deprecated docs/
 
 # find TODO and FIXME within 3 lines of each other - related work items
 re --near 3 -a TODO -a FIXME .

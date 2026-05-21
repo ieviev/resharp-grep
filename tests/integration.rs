@@ -93,7 +93,7 @@ fn stdin_match() {
 fn file_search() {
     let td = TestDir::new();
     let f = td.write("fruits.txt", "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
-    let (out, _) = run_args(&["--no-heading", "--no-line-number", "--color", "never", "apple", f.to_str().unwrap()]);
+    let (out, _) = run_args(&["--no-heading", "--color", "never", "apple", f.to_str().unwrap()]);
     assert!(out.contains("apple pie"));
     assert!(out.contains("apple sauce"));
     assert!(!out.contains("banana"));
@@ -146,7 +146,7 @@ fn case_insensitive() {
 
 #[test]
 fn case_sensitive() {
-    let (out, _) = run_stdin(&["-n", "-s", "hello"], "hello world\nHello World\nHELLO WORLD\nhello\n");
+    let (out, _) = run_stdin(&["-n", "--case-sensitive", "hello"], "hello world\nHello World\nHELLO WORLD\nhello\n");
     assert_eq!(out, "1:hello world\n4:hello");
 }
 
@@ -174,24 +174,6 @@ fn smart_case_upper() {
 
 
 #[test]
-fn invert_match() {
-    let (out, _) = run_stdin(&["-n", "-v", "apple|sauce"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
-    assert_eq!(out, "2:banana split\n4:cherry tart\n5:grape juice");
-}
-
-#[test]
-fn word_match() {
-    let (out, _) = run_stdin(&["-n", "-w", "cat"], "the cat sat\ncatalog\nthe cat and dog\nscatter\n");
-    assert_eq!(out, "1:the cat sat\n3:the cat and dog");
-}
-
-#[test]
-fn line_match() {
-    let (out, _) = run_stdin(&["-n", "-x", "hello"], "hello world\nHello World\nHELLO WORLD\nhello\n");
-    assert_eq!(out, "4:hello");
-}
-
-#[test]
 fn max_count() {
     let (out, _) = run_stdin(&["-n", "-m", "1", "apple"], "apple pie\nbanana split\napple sauce\n");
     assert_eq!(out, "1:apple pie");
@@ -208,18 +190,6 @@ fn count() {
 fn only_matching() {
     let (out, _) = run_stdin(&["-n", "-o", "apple"], "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
     assert_eq!(out, "1:apple\n3:apple");
-}
-
-#[test]
-fn only_matching_multiple_per_line_column() {
-    let (out, _) = run_stdin(&["-o", "--column", "foo"], "foo bar foo baz\n");
-    assert_eq!(out, "1:foo\n9:foo");
-}
-
-#[test]
-fn only_matching_multiple_per_line_byte_offset() {
-    let (out, _) = run_stdin(&["-o", "-b", "foo"], "foo bar foo baz\n");
-    assert_eq!(out, "0:foo\n8:foo");
 }
 
 #[test]
@@ -286,16 +256,41 @@ fn exclude_match_differs_from_not() {
     assert!(!out_e.contains('"'), "got: {out_e:?}");
 }
 
+// -d DELIM: the match span cannot contain DELIM.
+// This is the primary use: split lines at a delimiter with -o, or prevent
+// multi-term matches from crossing a boundary character.
+//
+// --scope-re DELIM: widens the search window so -a terms can co-occur across lines,
+// bounded by DELIM. Note: --scope-re uses the same complement pattern internally,
+// but operates on the whole file buffer, so matches are multi-line.
+
 #[test]
-fn column() {
-    let (out, _) = run_stdin(&["-n", "--column", "bar"], "foo bar baz\n");
-    assert_eq!(out, "1:5:foo bar baz");
+fn delimiter_splits_with_only_matching() {
+    // classic use: split a CSV line into fields, no field contains the comma
+    let (out, _) = run_stdin(&["-o", "-d", ",", "_*"], "a,b,c\n");
+    let fields: Vec<&str> = out.lines().collect();
+    assert_eq!(fields, ["a", "b", "c"]);
 }
 
 #[test]
-fn byte_offset() {
-    let (out, _) = run_stdin(&["-n", "-b", "bbb"], "aaa\nbbb\nccc\n");
-    assert_eq!(out, "2:4:bbb");
+fn delimiter_blocks_cross_boundary_match() {
+    // hello and world on the same line, separated by comma.
+    // without -d: both terms co-occur on the line, matches.
+    // with -d ',': the span hello..world contains ',' so it fails; "hello world" has no comma.
+    let input = "hello,world\nhello world\n";
+    let (out_without, _) = run_stdin(&["-a", "hello", "-a", "world"], input);
+    assert!(out_without.contains("hello,world"), "without -d: {out_without:?}");
+    let (out_with, _) = run_stdin(&["-a", "hello", "-a", "world", "-d", ","], input);
+    assert_eq!(out_with, "hello world", "with -d: {out_with:?}");
+}
+
+#[test]
+fn delimiter_alias_e_same_as_d() {
+    // -E is kept as a visible alias for -d; both must produce identical results
+    let input = "a,b,c\n";
+    let (out_d, _) = run_stdin(&["-o", "-d", ",", "_*"], input);
+    let (out_e, _) = run_stdin(&["-o", "-E", ",", "_*"], input);
+    assert_eq!(out_d, out_e);
 }
 
 #[test]
@@ -305,19 +300,6 @@ fn files_with_matches() {
     let (out, _) = run_args(&["-l", "--no-heading", "--color", "never", "apple", f.to_str().unwrap()]);
     assert_eq!(out, f.to_str().unwrap());
 }
-
-#[test]
-fn files_without_match() {
-    let td = TestDir::new();
-    let f1 = td.write("fruits.txt", "apple pie\nbanana split\n");
-    let f2 = td.write("cats.txt", "the cat sat\ncatalog\n");
-    let (out, _) = run_args(&[
-        "--files-without-match", "--no-heading", "--color", "never",
-        "apple", f1.to_str().unwrap(), f2.to_str().unwrap(),
-    ]);
-    assert_eq!(out, f2.to_str().unwrap());
-}
-
 
 #[test]
 fn after_context() {
@@ -355,7 +337,7 @@ fn pattern_file() {
     let td = TestDir::new();
     let pf = td.write("pats.txt", "apple\nbanana\n");
     let (out, _) = run_stdin(
-        &["-n", "-f", pf.to_str().unwrap()],
+        &["-n", "--file", pf.to_str().unwrap()],
         "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n",
     );
     assert_eq!(out, "1:apple pie\n2:banana split\n3:apple sauce");
@@ -365,7 +347,7 @@ fn pattern_file() {
 fn e_with_file_path() {
     let td = TestDir::new();
     let f = td.write("fruits.txt", "apple pie\nbanana split\napple sauce\ncherry tart\ngrape juice\n");
-    let (out, _) = run_args(&["-e", "apple", f.to_str().unwrap(), "--no-heading", "--no-line-number", "--color", "never"]);
+    let (out, _) = run_args(&["-e", "apple", f.to_str().unwrap(), "--no-heading", "--color", "never"]);
     assert!(out.contains("apple pie"));
     assert!(out.contains("apple sauce"));
     assert!(!out.contains("banana"));
@@ -508,7 +490,7 @@ fn type_filter() {
     td.write("dir/main.rs", "fn main() {}\n");
     td.write("dir/main.py", "def main():\n");
     let (out, _) = run_args(&[
-        "-t", "rust", "--no-heading", "--no-line-number", "--color", "never",
+        "-t", "rust", "--no-heading", "--color", "never",
         "main", td.path().join("dir").to_str().unwrap(),
     ]);
     assert!(out.contains("fn main() {}"));
@@ -521,7 +503,7 @@ fn type_not_filter() {
     td.write("dir/main.rs", "fn main() {}\n");
     td.write("dir/main.py", "def main():\n");
     let (out, _) = run_args(&[
-        "-T", "rust", "--no-heading", "--no-line-number", "--color", "never",
+        "-T", "rust", "--no-heading", "--color", "never",
         "main", td.path().join("dir").to_str().unwrap(),
     ]);
     assert!(out.contains("def main"), "-T rust should include .py files");
@@ -559,7 +541,7 @@ fn hidden_files() {
     td.write("dir/.hidden", "hidden content\n");
     td.write("dir/visible.txt", "visible content\n");
     let (out, _) = run_args(&[
-        "--hidden", "--no-heading", "--no-line-number", "--color", "never",
+        "--hidden", "--no-heading", "--color", "never",
         "hidden", td.path().join("dir").to_str().unwrap(),
     ]);
     assert!(out.contains("hidden content"));
@@ -638,132 +620,29 @@ fn make_large_file(td: &TestDir) -> PathBuf {
 }
 
 #[test]
-fn mmap_forced_small_file() {
-    let td = TestDir::new();
-    let f = td.write("small.txt", "apple pie\nbanana split\napple sauce\n");
-    let (out, code) = run_args(&[
-        "--mmap", "--no-heading", "--no-line-number", "--color", "never",
-        "apple", f.to_str().unwrap(),
-    ]);
-    assert_eq!(code, 0);
-    assert!(out.contains("apple pie"));
-    assert!(out.contains("apple sauce"));
-    assert!(!out.contains("banana"));
-}
-
-#[test]
-fn no_mmap_large_file() {
-    let td = TestDir::new();
-    let f = make_large_file(&td);
-    let (out, code) = run_args(&[
-        "--no-mmap", "--no-heading", "--no-line-number", "--color", "never",
-        "MATCH_", f.to_str().unwrap(),
-    ]);
-    assert_eq!(code, 0);
-    assert!(out.contains("MATCH_START"));
-    assert!(out.contains("MATCH_MIDDLE"));
-    assert!(out.contains("MATCH_END"));
-}
-
-#[test]
 fn mmap_auto_large_file() {
     let td = TestDir::new();
     let f = make_large_file(&td);
     // auto-mmap (file is >1MB), just verify correctness
     let (out, code) = run_args(&[
-        "--no-heading", "--no-line-number", "--color", "never",
+        "--no-heading", "--color", "never",
         "MATCH_", f.to_str().unwrap(),
     ]);
     assert_eq!(code, 0);
     assert!(out.contains("MATCH_START"));
     assert!(out.contains("MATCH_MIDDLE"));
     assert!(out.contains("MATCH_END"));
-}
-
-#[test]
-fn mmap_vs_read_identical_output() {
-    let td = TestDir::new();
-    let f = make_large_file(&td);
-    let fp = f.to_str().unwrap();
-    let (out_mmap, _) = run_args(&[
-        "--mmap", "--no-heading", "--color", "never",
-        "MATCH_", fp,
-    ]);
-    let (out_read, _) = run_args(&[
-        "--no-mmap", "--no-heading", "--color", "never",
-        "MATCH_", fp,
-    ]);
-    assert_eq!(out_mmap, out_read);
-}
-
-#[test]
-fn mmap_count_matches() {
-    let td = TestDir::new();
-    let f = make_large_file(&td);
-    let (out_mmap, _) = run_args(&[
-        "--mmap", "-c", "--no-heading", "--color", "never",
-        "MATCH_", f.to_str().unwrap(),
-    ]);
-    let (out_read, _) = run_args(&[
-        "--no-mmap", "-c", "--no-heading", "--color", "never",
-        "MATCH_", f.to_str().unwrap(),
-    ]);
-    assert!(out_mmap.ends_with("3"));
-    assert!(out_read.ends_with("3"));
-}
-
-#[test]
-#[ignore = "takes long"]
-fn mmap_intersection() {
-    // resharp processes in reverse - test intersection with mmap
-    let td = TestDir::new();
-    let f = make_large_file(&td);
-    let (out_mmap, _) = run_args(&[
-        "--mmap", "-c", "--no-heading", "--color", "never",
-        "(_*MATCH_*)&(_*secret_*)", f.to_str().unwrap(),
-    ]);
-    let (out_read, _) = run_args(&[
-        "--no-mmap", "-c", "--no-heading", "--color", "never",
-        "(_*MATCH_*)&(_*secret_*)", f.to_str().unwrap(),
-    ]);
-    // MATCH_START and MATCH_MIDDLE have "secret", MATCH_END has "secret" too
-    assert_eq!(out_mmap, out_read);
-    assert!(out_mmap.ends_with("3"));
-}
-
-#[test]
-fn mmap_invert_match() {
-    let td = TestDir::new();
-    let f = make_large_file(&td);
-    let (count_mmap, _) = run_args(&[
-        "--mmap", "-vc", "--no-heading", "--color", "never",
-        "MATCH_", f.to_str().unwrap(),
-    ]);
-    let (count_read, _) = run_args(&[
-        "--no-mmap", "-vc", "--no-heading", "--color", "never",
-        "MATCH_", f.to_str().unwrap(),
-    ]);
-    assert_eq!(count_mmap, count_read);
-    // 100_000 filler lines + 0 match lines = 100_000 non-matching
-    let n: usize = count_mmap.trim().split(':').last().unwrap().parse().unwrap();
-    assert_eq!(n, 100_000);
 }
 
 #[test]
 fn mmap_context_lines() {
     let td = TestDir::new();
     let f = make_large_file(&td);
-    let (out_mmap, _) = run_args(&[
-        "--mmap", "-C", "1", "--no-heading", "--color", "never",
+    let (out, _) = run_args(&[
+        "-C", "1", "--no-heading", "--color", "never",
         "MATCH_MIDDLE", f.to_str().unwrap(),
     ]);
-    let (out_read, _) = run_args(&[
-        "--no-mmap", "-C", "1", "--no-heading", "--color", "never",
-        "MATCH_MIDDLE", f.to_str().unwrap(),
-    ]);
-    assert_eq!(out_mmap, out_read);
-    // should have before-context, match, after-context
-    let lines: Vec<&str> = out_mmap.lines().collect();
+    let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines.len(), 3);
     assert!(lines[0].contains("filler"));
     assert!(lines[1].contains("MATCH_MIDDLE"));
@@ -846,14 +725,14 @@ fn find_all_no_trailing_newline_large_intersection() {
 #[test]
 fn scope_line_default() {
     // default scope is line, same as always
-    let (out, _) = run_stdin(&["-n", "-W", "cat", "-W", "dog"], "the cat and dog\ncat only\ndog only\n");
+    let (out, _) = run_stdin(&["-n", "-a", "cat", "-a", "dog"], "the cat and dog\ncat only\ndog only\n");
     assert_eq!(out, "1:the cat and dog");
 }
 
 #[test]
 fn scope_paragraph() {
     let input = "cats and\ndogs together\n\nfish only\n";
-    let (out, code) = run_stdin(&["--scope", "paragraph", "-W", "cats", "-W", "dogs"], input);
+    let (out, code) = run_stdin(&["--scope", "paragraph", "-a", "cats", "-a", "dogs"], input);
     assert_eq!(code, 0);
     assert!(out.contains("cats and"));
     assert!(out.contains("dogs together"));
@@ -879,7 +758,7 @@ fn scope_custom_boundary() {
     // custom scope: boundary is \n\n, match must not cross it
     let input = "error here\ntimeout here\n\nerror only\n";
     let (out, code) = run_stdin(
-        &["--scope", "\n\n", "(_*error_*)&(_*timeout_*)"],
+        &["--scope-re", "\n\n", "(_*error_*)&(_*timeout_*)"],
         input,
     );
     assert_eq!(code, 0);
@@ -892,13 +771,198 @@ fn scope_custom_no_cross() {
     // should not match across boundary
     let input = "error here\n\ntimeout here\n";
     let (out, code) = run_stdin(
-        &["--scope", "\n\n", "(_*error_*)&(_*timeout_*)"],
+        &["--scope-re", "\n\n", "(_*error_*)&(_*timeout_*)"],
         input,
     );
     assert_eq!(out, "");
     assert_eq!(code, 1);
 }
 
+
+#[test]
+fn word_regexp_basic() {
+    let (out, _) = run_stdin(&["-w", "foo"], "foo\nfoobar\nbarfoo\nx foo y\n");
+    assert_eq!(out, "foo\nx foo y");
+}
+
+#[test]
+fn word_regexp_alternation_grouped() {
+    // -w must group the alternation so \b binds to the whole, not just one branch
+    let (out, _) = run_stdin(&["-w", "foo|bar"], "foo\nfoobar\nbar\nbarbaz\n");
+    assert_eq!(out, "foo\nbar");
+}
+
+#[test]
+fn word_regexp_with_fixed_string() {
+    // -F escapes '.', -w then forbids adjacency. Only literal whole word 'a.b' matches.
+    let (out, _) = run_stdin(&["-w", "-F", "a.b"], "a.b\na.bc\nab\nxa.by\n");
+    assert_eq!(out, "a.b");
+}
+
+#[test]
+fn invert_match_basic() {
+    let (out, _) = run_stdin(&["-v", "banana"], "apple\nbanana\ncherry\n");
+    assert_eq!(out, "apple\ncherry");
+}
+
+#[test]
+fn invert_match_count() {
+    let (out, _) = run_stdin(&["-v", "-c", "banana"], "apple\nbanana\ncherry\n");
+    assert_eq!(out.trim(), "2");
+}
+
+#[test]
+fn invert_match_rejects_non_line_scope() {
+    let (_, code) = run_stdin(&["-v", "-M", "foo"], "x\n");
+    assert_ne!(code, 0, "-v with multi-line scope must error");
+    let (_, code) = run_stdin(&["-v", "--near", "3", "-a", "foo", "-a", "bar"], "x\n");
+    assert_ne!(code, 0);
+    let (_, code) = run_stdin(&["-v", "-p", "foo"], "x\n");
+    assert_ne!(code, 0);
+}
+
+#[test]
+fn show_pattern_simple() {
+    let (out, code) = run_stdin(&["--show-pattern", "foo"], "");
+    assert_eq!(code, 0);
+    assert!(out.contains("foo"), "got: {out:?}");
+}
+
+#[test]
+fn show_pattern_boolean_compound() {
+    // -a foo -a bar --near 3 must compile to one intersection pattern with a near constraint
+    let (out, code) = run_stdin(&["--show-pattern", "-a", "foo", "-a", "bar", "--near", "3"], "");
+    assert_eq!(code, 0);
+    assert!(out.contains("foo") && out.contains("bar"), "got: {out:?}");
+    assert!(out.contains("&"), "compound pattern must use intersection: {out:?}");
+    assert!(out.contains("{3}"), "--near must appear as a quantifier bound: {out:?}");
+}
+
+#[test]
+fn show_pattern_with_word_regexp() {
+    let (out, _) = run_stdin(&["--show-pattern", "-w", "foo"], "");
+    assert!(out.contains("\\b(foo)\\b"), "got: {out:?}");
+}
+
+#[test]
+fn scope_re_vs_delim_same_char() {
+    // Same delimiter char, opposite jobs. -d ',' constrains the MATCH SPAN on one line.
+    // --scope-re ',' constrains the SEARCH WINDOW across the whole buffer.
+    let input = "alpha,beta\ngamma,delta\n";
+
+    // -d ',' with -a alpha -a beta: span across both terms on one line includes ','
+    // -> no match. On its own line they don't co-occur. Result: empty.
+    let (out_d, code_d) = run_stdin(
+        &["-a", "alpha", "-a", "beta", "-d", ","],
+        input,
+    );
+    assert_eq!(out_d, "", "-d forbids ',' inside the match span: {out_d:?}");
+    assert_eq!(code_d, 1);
+
+    // --scope-re ',' with same -a -a: now the window is bytes between commas.
+    // 'alpha' and 'beta' live in different windows -> still no match.
+    let (out_s1, code_s1) = run_stdin(
+        &["-a", "alpha", "-a", "beta", "--scope-re", ","],
+        input,
+    );
+    assert_eq!(out_s1, "", "--scope-re ',' windows alpha and beta apart: {out_s1:?}");
+    assert_eq!(code_s1, 1);
+
+    // But --scope-re ',' lets terms co-occur across a NEWLINE (newline is not the delim).
+    // 'beta' and 'gamma' are in the same window (between the two commas).
+    let (out_s2, code_s2) = run_stdin(
+        &["-a", "beta", "-a", "gamma", "--scope-re", ","],
+        input,
+    );
+    assert_eq!(code_s2, 0, "--scope-re widens across newlines: {out_s2:?}");
+    assert!(out_s2.contains("beta") && out_s2.contains("gamma"), "got: {out_s2:?}");
+
+    // -d ',' CANNOT widen across newlines: it's a line-scoped span constraint.
+    let (out_d2, code_d2) = run_stdin(
+        &["-a", "beta", "-a", "gamma", "-d", ","],
+        input,
+    );
+    assert_eq!(out_d2, "", "-d is line-scoped, beta and gamma are on different lines: {out_d2:?}");
+    assert_eq!(code_d2, 1);
+}
+
+#[test]
+fn scope_rejects_invalid_keyword() {
+    let (_out, code) = run_stdin(&["--scope", "banana", "x"], "x\n");
+    assert_ne!(code, 0, "--scope must reject non-keyword values (use --scope-re for regex)");
+}
+
+#[test]
+fn scope_and_scope_re_mutually_exclusive() {
+    let (_out, code) = run_stdin(
+        &["--scope", "paragraph", "--scope-re", "---", "x"],
+        "x\n",
+    );
+    assert_ne!(code, 0, "--scope and --scope-re must conflict");
+}
+
+#[test]
+fn scope_re_multi_term_across_lines() {
+    // Markdown-section style: terms must co-occur within one '## ' section.
+    let input = "## intro\nhello world\n\n## api\nfoo and bar appear here\non separate lines too\n\n## end\nfoo only\n";
+    let (out, code) = run_stdin(
+        &["--scope-re", "## ", "-a", "foo", "-a", "bar"],
+        input,
+    );
+    assert_eq!(code, 0, "out: {out:?}");
+    assert!(out.contains("foo and bar appear here"), "got: {out:?}");
+    assert!(!out.contains("foo only"), "end section has no 'bar': {out:?}");
+}
+
+#[test]
+fn count_multiline_counts_spans_not_touched_lines() {
+    // Two separate multi-line matches; each spans 2 lines.
+    // Before the fix --count returned 4 (touched lines). Should be 2 (matches).
+    let input = "foo\nbar\n\nfoo\nbar\n";
+    let (out, _) = run_stdin(&["-M", "-c", "foo\nbar"], input);
+    assert_eq!(out.trim(), "2", "got: {out:?}");
+}
+
+#[test]
+fn json_multiline_multiple_matches() {
+    // Two disjoint multi-line matches -> two JSON records, each with exact span.
+    let input = "foo\nbar\n---\nfoo\nbar\n";
+    let (out, _) = run_stdin(&["-M", "--json", "foo\nbar"], input);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 2, "one record per match span: {out:?}");
+    let v0: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    let v1: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+    assert_eq!(v0["match"], "foo\nbar");
+    assert_eq!(v1["match"], "foo\nbar");
+    assert_eq!(v0["line_number"], 1);
+    assert_eq!(v1["line_number"], 4);
+}
+
+#[test]
+fn json_multiline_emits_raw_span() {
+    let input = "aaa\nbbb foo\nccc bar\nddd\n";
+    let (out, code) = run_stdin(&["-M", "--json", "foo[\\s\\S]*bar"], input);
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 1, "expected one record per match span, got: {out}");
+    let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(v["match"], "foo\nccc bar");
+    assert_eq!(v["line_number"], 2);
+    assert_eq!(v["column"], 5);
+    assert_eq!(v["absolute_offset"], 4);
+    assert!(v.get("submatches").is_none(), "multiline json must not emit submatches");
+    assert!(v.get("lines").is_none(), "multiline json must not emit lines");
+    assert!(v.get("end_byte").is_none(), "dropped end_byte for rg-compat shape");
+}
+
+#[test]
+fn json_line_scope_unchanged() {
+    let (out, _) = run_stdin(&["--json", "foo"], "x foo y\n");
+    let v: serde_json::Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+    assert_eq!(v["lines"], "x foo y");
+    assert_eq!(v["submatches"][0]["match"], "foo");
+    assert!(v.get("absolute_offset").is_none(), "line scope must keep legacy schema");
+}
 
 #[test]
 fn json_basic() {
@@ -950,7 +1014,7 @@ fn json_show_scope() {
 #[test]
 fn near_basic() {
     let input = "unsafe {\n  foo();\n  bar.unwrap();\n}\nsafe_fn() {\n  baz();\n}\n";
-    let (out, code) = run_stdin(&["-P", "3", "-W", "unsafe", "-W", "unwrap"], input);
+    let (out, code) = run_stdin(&["--near", "3", "-a", "unsafe", "-a", "unwrap"], input);
     assert_eq!(code, 0);
     assert!(out.contains("unsafe"));
     assert!(out.contains("unwrap"));
@@ -959,7 +1023,7 @@ fn near_basic() {
 #[test]
 fn near_too_far() {
     let input = "unsafe {\n  a;\n  b;\n  c;\n  d;\n  e;\n  f.unwrap();\n}\n";
-    let (out, code) = run_stdin(&["-P", "2", "-W", "unsafe", "-W", "unwrap"], input);
+    let (out, code) = run_stdin(&["--near", "2", "-a", "unsafe", "-a", "unwrap"], input);
     // unsafe is on line 1, unwrap on line 7 - distance 6 > near 2
     assert_eq!(code, 1);
     assert_eq!(out, "");
@@ -968,7 +1032,7 @@ fn near_too_far() {
 #[test]
 fn near_within_range() {
     let input = "unsafe {\n  f.unwrap();\n}\n";
-    let (out, code) = run_stdin(&["-P", "2", "-W", "unsafe", "-W", "unwrap"], input);
+    let (out, code) = run_stdin(&["--near", "2", "-a", "unsafe", "-a", "unwrap"], input);
     assert_eq!(code, 0);
     assert!(out.contains("unsafe"));
     assert!(out.contains("unwrap"));
@@ -988,32 +1052,11 @@ fn max_total_files() {
     td.write("a.txt", "match 1\nmatch 2\nmatch 3\n");
     td.write("b.txt", "match 4\nmatch 5\n");
     let (out, _) = run_args(&[
-        "--max-total", "3", "--sort", "path", "--no-heading", "--no-line-number", "--color", "never",
+        "--max-total", "3", "--sort", "path", "--no-heading", "--color", "never",
         "match", td.path().to_str().unwrap(),
     ]);
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines.len(), 3);
-}
-
-
-#[test]
-fn unique_only_matching() {
-    let (out, _) = run_stdin(
-        &["-o", "--unique", "apple|banana"],
-        "apple pie\nbanana split\napple sauce\nbanana cream\napple tart\n",
-    );
-    let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 2); // apple + banana, deduplicated
-}
-
-#[test]
-fn unique_full_lines() {
-    let (out, _) = run_stdin(
-        &["--unique", "dup"],
-        "dup line\nother\ndup line\ndup line\n",
-    );
-    let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 1); // only one "dup line"
 }
 
 
@@ -1146,40 +1189,6 @@ fn fixed_strings_dot_and_underscore() {
     let (out, _) = run_stdin(&["-n", "-F", "foo._bar"], "foo._bar\nfooXYbar\nfoo.Xbar\n");
     assert_eq!(out, "1:foo._bar");
 }
-
-#[test]
-fn raw_underscore_literal() {
-    // in raw mode, _ should be literal, not resharp wildcard
-    let (out, _) = run_stdin(&["-n", "-R", "a_b"], "a_b\naxb\nabc\n");
-    assert_eq!(out, "1:a_b");
-}
-
-#[test]
-fn raw_ampersand_literal() {
-    let (out, _) = run_stdin(&["-n", "-R", "a&b"], "a&b\nabc\n");
-    assert_eq!(out, "1:a&b");
-}
-
-#[test]
-fn raw_tilde_literal() {
-    let (out, _) = run_stdin(&["-n", "-R", "a~b"], "a~b\nabc\n");
-    assert_eq!(out, "1:a~b");
-}
-
-#[test]
-fn raw_regex_still_works() {
-    // raw mode should still support standard regex
-    let (out, _) = run_stdin(&["-n", "-R", "a.b"], "a_b\naxb\nabc\n");
-    assert_eq!(out, "1:a_b\n2:axb");
-}
-
-#[test]
-fn raw_backslash_preserved() {
-    // \d should still work in raw mode
-    let (out, _) = run_stdin(&["-n", "-R", r"\d+_\d+"], "3_4\nabc\n12_34\n");
-    assert_eq!(out, "1:3_4\n3:12_34");
-}
-
 
 #[test]
 fn files_lists_all() {
@@ -1391,7 +1400,7 @@ fn files_content_search_still_works() {
     td.write("a.rs", "fn main() {}\n");
     td.write("b.py", "def main():\n");
     let (out, code) = run_args(&[
-        "-g", "*.rs", "--no-heading", "--no-line-number", "--color", "never",
+        "-g", "*.rs", "--no-heading", "--color", "never",
         "fn main", td.path().to_str().unwrap(),
     ]);
     assert_eq!(code, 0);
@@ -1425,22 +1434,6 @@ fn files_unrestricted() {
     ]);
     assert!(out.contains(".secret"));
     assert!(out.contains("visible.txt"));
-}
-
-#[test]
-fn files_iglob() {
-    let td = TestDir::new();
-    td.write("Main.RS", "fn main() {}\n");
-    td.write("lib.rs", "pub mod lib;\n");
-    td.write("data.json", "{}\n");
-    let (out, code) = run_args(&[
-        "--files", "--iglob", "*.rs", "--color", "never",
-        td.path().to_str().unwrap(),
-    ]);
-    assert_eq!(code, 0);
-    assert!(out.contains("Main.RS"));
-    assert!(out.contains("lib.rs"));
-    assert!(!out.contains("data.json"));
 }
 
 #[test]
@@ -1672,24 +1665,8 @@ fn null_files_with_matches() {
 }
 
 #[test]
-fn null_files_without_match() {
-    let td = TestDir::new();
-    td.write("match.txt", "apple pie\n");
-    td.write("miss.txt", "banana split\n");
-    let (out, code) = run_args(&[
-        "--files-without-match", "-0", "--color", "never",
-        "apple", td.path().to_str().unwrap(),
-    ]);
-    assert_eq!(code, 0);
-    let paths: Vec<&str> = out.split('\0').filter(|s| !s.is_empty()).collect();
-    assert_eq!(paths.len(), 1);
-    assert!(paths[0].contains("miss.txt"));
-    assert!(!out.contains('\n'));
-}
-
-#[test]
 fn e_flag_union() {
-    let (out, code) = run_stdin(&["-e", "foo", "-e", "bar", "--no-line-number", "--color", "never"], "foo\nbar\nbaz\n");
+    let (out, code) = run_stdin(&["-e", "foo", "-e", "bar", "--color", "never"], "foo\nbar\nbaz\n");
     assert_eq!(code, 0);
     assert_eq!(out, "foo\nbar");
 }
@@ -1697,7 +1674,7 @@ fn e_flag_union() {
 #[test]
 fn e_flag_union_with_and() {
     let (out, code) = run_stdin(
-        &["-e", "foo", "-e", "bar", "-a", "x", "--no-line-number", "--color", "never"],
+        &["-e", "foo", "-e", "bar", "-a", "x", "--color", "never"],
         "foo x\nbar x\nfoo y\nbaz x\n",
     );
     assert_eq!(code, 0);
@@ -1707,7 +1684,7 @@ fn e_flag_union_with_and() {
 #[test]
 fn e_flag_union_with_and_paragraph() {
     let (out, code) = run_stdin(
-        &["-e", "foo", "-e", "bar", "-a", "x", "-p", "--no-line-number", "--color", "never"],
+        &["-e", "foo", "-e", "bar", "-a", "x", "-p", "--color", "never"],
         "foo\nx\n\nbar\nx\n\nfoo\ny\n",
     );
     assert_eq!(code, 0);
@@ -1723,7 +1700,7 @@ fn e_flag_union_with_and_file_scope() {
     td.write("b.txt", "bar\nx\n");
     td.write("c.txt", "foo\ny\n");
     let (out, code) = run_args(&[
-        "-e", "foo", "-e", "bar", "-a", "x", "-d", "file",
+        "-e", "foo", "-e", "bar", "-a", "x", "-f",
         "--sort", "path", "--color", "never",
         td.path().to_str().unwrap(),
     ]);
@@ -1736,7 +1713,7 @@ fn e_flag_union_with_and_file_scope() {
 #[test]
 fn e_flag_union_with_not() {
     let (out, code) = run_stdin(
-        &["-e", "foo", "-e", "bar", "-N", "x", "--no-line-number", "--color", "never"],
+        &["-e", "foo", "-e", "bar", "-N", "x", "--color", "never"],
         "foo x\nbar x\nfoo y\nbar z\nbaz\n",
     );
     assert_eq!(code, 0);
@@ -1751,7 +1728,7 @@ fn file_scope_negation_only() {
     td.write("c.txt", "foo\nbar\n");
     td.write("d.txt", "hello\nworld\n");
     let (out, code) = run_args(&[
-        "-d", "file", "-N", "foo", "--sort", "path", "--color", "never",
+        "-f", "-N", "foo", "--sort", "path", "--color", "never",
         td.path().to_str().unwrap(),
     ]);
     assert_eq!(code, 0);
@@ -1769,7 +1746,7 @@ fn file_scope_negation_only_implicit_cwd() {
     let mut cmd = resharp();
     cmd.current_dir(td.path());
     cmd.stdin(std::process::Stdio::null());
-    cmd.args(&["-d", "file", "-N", "foo", "--sort", "path", "--color", "never"]);
+    cmd.args(&["-f", "-N", "foo", "--sort", "path", "--color", "never"]);
     let out = cmd.output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
     assert!(out.status.success(), "should succeed, got code={} stderr={}", out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stderr));
@@ -1785,7 +1762,7 @@ fn file_scope_multiple_negations() {
     td.write("c.txt", "foo\nbar\n");
     td.write("d.txt", "hello\nworld\n");
     let (out, code) = run_args(&[
-        "-d", "file", "-N", "foo", "-N", "bar", "--sort", "path", "--color", "never",
+        "-f", "-N", "foo", "-N", "bar", "--sort", "path", "--color", "never",
         td.path().to_str().unwrap(),
     ]);
     assert_eq!(code, 0);
@@ -1803,7 +1780,7 @@ fn file_scope_positive_and_negation() {
     td.write("c.txt", "foo\nbar\n");
     td.write("d.txt", "hello\nworld\n");
     let (out, code) = run_args(&[
-        "-d", "file", "-a", "foo", "-N", "bar", "--sort", "path", "--color", "never",
+        "-f", "-a", "foo", "-N", "bar", "--sort", "path", "--color", "never",
         td.path().to_str().unwrap(),
     ]);
     assert_eq!(code, 0);
@@ -1823,48 +1800,6 @@ fn null_not_set_by_default() {
     ]);
     assert!(out.contains('\n') || out.ends_with("a.txt"));
     assert!(!out.contains('\0'));
-}
-
-#[test]
-fn ignore_file() {
-    let td = TestDir::new();
-    td.write("a.txt", "hello world\n");
-    td.write("b.log", "hello world\n");
-    td.write("myignore", "*.log\n");
-    let (out, code) = run_args(&[
-        "--ignore-file", td.path().join("myignore").to_str().unwrap(),
-        "-l", "--color", "never",
-        "hello", td.path().to_str().unwrap(),
-    ]);
-    assert_eq!(code, 0);
-    assert!(out.contains("a.txt"));
-    assert!(!out.contains("b.log"));
-}
-
-#[test]
-fn trim_long_line() {
-    let long = format!("{}FINDME{}", "x".repeat(200), "y".repeat(200));
-    let (out, code) = run_stdin(&["--trim", "--color", "never", "FINDME"], &long);
-    assert_eq!(code, 0);
-    assert!(out.contains("FINDME"), "match should be visible");
-    assert!(out.contains("\u{2026}"), "should have ellipsis");
-    assert!(out.len() < long.len(), "output should be shorter than input");
-}
-
-#[test]
-fn trim_short_line_unchanged() {
-    let (out, code) = run_stdin(&["--trim", "--no-line-number", "--color", "never", "hello"], "hello world");
-    assert_eq!(code, 0);
-    assert_eq!(out, "hello world");
-}
-
-#[test]
-fn trim_match_at_start() {
-    let long = format!("FINDME{}", "x".repeat(300));
-    let (out, code) = run_stdin(&["--trim", "--no-line-number", "--color", "never", "FINDME"], &long);
-    assert_eq!(code, 0);
-    assert!(out.starts_with("FINDME"), "match at start should remain at start");
-    assert!(out.ends_with("\u{2026}"), "should end with ellipsis");
 }
 
 #[test]
@@ -1894,61 +1829,6 @@ fn vimgrep_with_file() {
 }
 
 #[test]
-fn passthru_shows_all_lines() {
-    let (out, code) = run_stdin(
-        &["--passthru", "--no-line-number", "--color", "never", "foo"],
-        "line one\nfoo bar\nline three\nfoo baz\nline five",
-    );
-    assert_eq!(code, 0);
-    let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 5);
-    assert_eq!(lines[0], "line one");
-    assert_eq!(lines[1], "foo bar");
-    assert_eq!(lines[4], "line five");
-}
-
-#[test]
-fn passthru_no_match_exit_1() {
-    let (_, code) = run_stdin(
-        &["--passthru", "--color", "never", "xyz"],
-        "no match here",
-    );
-    assert_eq!(code, 1);
-}
-
-#[test]
-fn max_columns_skips_long_lines() {
-    let (out, code) = run_stdin(
-        &["--max-columns", "20", "--no-line-number", "--color", "never", "match"],
-        "short match\nthis is a very long line that also has match in it\nmatch again",
-    );
-    assert_eq!(code, 0);
-    let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 2);
-    assert_eq!(lines[0], "short match");
-    assert_eq!(lines[1], "match again");
-}
-
-#[test]
-fn context_separator_custom() {
-    let (out, _) = run_stdin(
-        &["-C", "1", "--context-separator", "~~~", "--no-line-number", "--color", "never", "x"],
-        "a\nx\nb\nc\nd\nx\ne",
-    );
-    assert!(out.contains("~~~"), "should use custom separator");
-    assert!(!out.contains("\n--\n"), "should not use default separator");
-}
-
-#[test]
-fn context_separator_empty() {
-    let (out, _) = run_stdin(
-        &["-C", "1", "--context-separator", "", "--no-line-number", "--color", "never", "x"],
-        "a\nx\nb\nc\nd\nx\ne",
-    );
-    assert!(!out.contains("\n--\n"), "should suppress separator");
-}
-
-#[test]
 fn heading_shows_match_count() {
     let td = TestDir::new();
     td.write("a.txt", "foo\nbar\nfoo\n");
@@ -1965,7 +1845,7 @@ fn heading_shows_match_count() {
 fn head_limits_output_lines() {
     // 5 matching lines, limit to 2 output lines
     let (out, _) = run_stdin(
-        &["--head", "2", "--no-line-number", "--color", "never", "a"],
+        &["--head", "2", "--color", "never", "a"],
         "a\na\na\na\na\n",
     );
     assert_eq!(out.lines().count(), 2);
@@ -1975,7 +1855,7 @@ fn head_limits_output_lines() {
 fn head_truncation_notice() {
     let (out, stderr, _) = run_args_full(&[
         "--head", "1",
-        "--no-heading", "--no-line-number", "--color", "never",
+        "--no-heading", "--color", "never",
         "a",
         "/dev/stdin",
     ]);
@@ -1986,7 +1866,7 @@ fn head_truncation_notice() {
 #[test]
 fn head_no_truncation_when_under_limit() {
     let (out, _) = run_stdin(
-        &["--head", "10", "--no-line-number", "--color", "never", "a"],
+        &["--head", "10", "--color", "never", "a"],
         "a\na\na\n",
     );
     assert_eq!(out.lines().count(), 3);
@@ -1998,7 +1878,7 @@ fn head_file_truncation_notice() {
     td.write("a.txt", "a\na\na\na\na\n");
     let (out, stderr, code) = run_args_full(&[
         "--head", "2",
-        "--no-heading", "--no-line-number", "--color", "never",
+        "--no-heading", "--color", "never",
         "a", td.path().join("a.txt").to_str().unwrap(),
     ]);
     assert_eq!(code, 0);
@@ -2010,7 +1890,7 @@ fn head_file_truncation_notice() {
 fn offset_skips_lines() {
     // 5 matching lines, skip first 2
     let (out, _) = run_stdin(
-        &["--offset", "2", "--no-line-number", "--color", "never", "a"],
+        &["--offset", "2", "--color", "never", "a"],
         "a\na\na\na\na\n",
     );
     assert_eq!(out.lines().count(), 3);
@@ -2020,7 +1900,7 @@ fn offset_skips_lines() {
 fn offset_combined_with_head() {
     // 5 matching lines, skip 2 then take 2
     let (out, _) = run_stdin(
-        &["--offset", "2", "--head", "2", "--no-line-number", "--color", "never", "a"],
+        &["--offset", "2", "--head", "2", "--color", "never", "a"],
         "a\na\na\na\na\n",
     );
     assert_eq!(out.lines().count(), 2);
@@ -2030,7 +1910,7 @@ fn offset_combined_with_head() {
 fn offset_greater_than_total() {
     // offset beyond all results yields no output
     let (out, _) = run_stdin(
-        &["--offset", "10", "--no-line-number", "--color", "never", "a"],
+        &["--offset", "10", "--color", "never", "a"],
         "a\na\na\n",
     );
     assert_eq!(out, "");
@@ -2040,42 +1920,10 @@ fn offset_greater_than_total() {
 fn offset_zero_returns_all() {
     // offset=0 is a no-op
     let (out, _) = run_stdin(
-        &["--offset", "0", "--no-line-number", "--color", "never", "a"],
+        &["--offset", "0", "--color", "never", "a"],
         "a\na\na\n",
     );
     assert_eq!(out.lines().count(), 3);
-}
-
-#[test]
-fn count_matches_stdin() {
-    let (out, code) = run_stdin(&["--count-matches", "a"], "a\nb\na\nc\na\n");
-    assert_eq!(code, 0);
-    assert_eq!(out, "3");
-}
-
-#[test]
-fn count_matches_no_matches() {
-    let (out, code) = run_stdin(&["--count-matches", "z"], "a\nb\nc\n");
-    assert_eq!(code, 1);
-    assert_eq!(out, "0");
-}
-
-#[test]
-fn count_matches_multi_file() {
-    let td = TestDir::new();
-    td.write("a.txt", "a\na\n");
-    td.write("b.txt", "a\nb\n");
-    let (out, code) = run_args(&["--count-matches", "a", td.path().to_str().unwrap()]);
-    assert_eq!(code, 0);
-    assert_eq!(out, "3");
-}
-
-#[test]
-fn count_matches_suppresses_normal_output() {
-    let (out, _) = run_stdin(&["--count-matches", "a"], "a\na\n");
-    // output must be exactly the number - no file paths, no line content
-    assert_eq!(out.lines().count(), 1);
-    assert_eq!(out.trim().parse::<usize>().unwrap(), 2);
 }
 
 #[test]

@@ -13,15 +13,15 @@ use clap::Parser;
   re TODO src/                              find TODO in src/
   re error -N debug -N trace src/           errors, filtering out debug and trace noise
   re --near 5 -a unsafe -a unwrap src/      unsafe code that unwraps within 5 lines
-  re -d file -a tokio -a diesel src/        files using both tokio and diesel
+  re -f -a tokio -a diesel src/             files using both tokio and diesel
   re -p password -p plaintext .             paragraphs mentioning both password and plaintext
-  re -d '\\n## ' -a API -a deprecated docs/ markdown sections discussing both API and deprecation
-  re -d '---' -a host -a port config/       YAML sections with both host and port
+  re -s '\\n## ' -a API -a deprecated docs/ markdown sections discussing both API and deprecation
+  re -s '---' -a host -a port config/       YAML sections with both host and port (-s is --scope-re)
   re --json TODO src/                       JSON output, one object per match",
     after_help = "see https://github.com/ieviev/resharp for the pattern language."
 )]
 pub struct Args {
-    /// regex pattern (positional, mutually exclusive with -e/-f)
+    /// regex pattern (positional, mutually exclusive with -e/--file)
     #[arg(value_name = "PATTERN")]
     pub pattern: Option<String>,
 
@@ -34,32 +34,24 @@ pub struct Args {
     pub regexp: Vec<String>,
 
     /// file containing patterns, one per line
-    #[arg(short = 'f', long = "file", value_name = "FILE")]
+    #[arg(long = "file", value_name = "FILE")]
     pub pattern_file: Vec<PathBuf>,
+
+    /// file scope search (equivalent to --scope file)
+    #[arg(short = 'f')]
+    pub file_scope: bool,
 
     /// case insensitive search
     #[arg(short = 'i', long = "ignore-case")]
     pub ignore_case: bool,
 
     /// case sensitive search (overrides -i)
-    #[arg(short = 's', long = "case-sensitive")]
+    #[arg(long = "case-sensitive")]
     pub case_sensitive: bool,
 
     /// smart case (insensitive unless pattern has uppercase)
     #[arg(short = 'S', long = "smart-case")]
     pub smart_case: bool,
-
-    /// invert match (show non-matching lines)
-    #[arg(short = 'v', long = "invert-match")]
-    pub invert_match: bool,
-
-    /// match only whole words
-    #[arg(short = 'w', long = "word-regexp")]
-    pub word_regexp: bool,
-
-    /// match only whole lines
-    #[arg(short = 'x', long = "line-regexp")]
-    pub line_regexp: bool,
 
     /// stop after NUM matches per file
     #[arg(short = 'm', long = "max-count", value_name = "NUM")]
@@ -77,8 +69,7 @@ pub struct Args {
     #[arg(short = 'l', long = "files-with-matches")]
     pub files_with_matches: bool,
 
-    /// print only filenames without matches
-    #[arg(long = "files-without-match")]
+    #[arg(skip)]
     pub files_without_match: bool,
 
     /// print only matched parts
@@ -89,36 +80,20 @@ pub struct Args {
     #[arg(short = 'n', long = "line-number")]
     pub line_number: bool,
 
-    /// suppress line numbers
-    #[arg(long = "no-line-number")]
-    pub no_line_number: bool,
-
-    /// show column number of first match
-    #[arg(long = "column")]
-    pub column: bool,
-
-    /// show byte offset of match
-    #[arg(short = 'b', long = "byte-offset")]
-    pub byte_offset: bool,
-
     /// literal string mode, or repeatable literal constraints (-F lit1 -F lit2)
     #[arg(short = 'F', long = "fixed-strings", aliases = ["fixed", "lit"], num_args = 0..=1, action = clap::ArgAction::Append, value_name = "STRING")]
     pub fixed_strings: Option<Vec<String>>,
 
-    /// standard regex mode (disables &, ~, and _ operators)
-    #[arg(short = 'R', long = "raw")]
-    pub raw: bool,
-
     /// require PATTERN to also appear in match (repeatable)
-    #[arg(short = 'a', long = "and", visible_short_alias = 'W', visible_alias = "with", alias = "add", value_name = "PATTERN")]
+    #[arg(short = 'a', long = "and", value_name = "PATTERN")]
     pub and: Vec<String>,
 
     /// exclude matches containing PATTERN (repeatable)
     #[arg(short = 'N', long = "not", value_name = "PATTERN")]
     pub not: Vec<String>,
 
-    /// exclude PATTERN from match body itself (no scope anchoring, repeatable)
-    #[arg(short = 'E', long = "exclude-match", value_name = "PATTERN")]
+    /// exclude matches containing PATTERN from match body (delimiter, repeatable)
+    #[arg(short = 'd', long = "delimiter", alias = "exclude-match", visible_short_alias = 'E', value_name = "PATTERN")]
     pub exclude_match: Vec<String>,
 
     /// replace matches with TEXT in output
@@ -153,10 +128,6 @@ pub struct Args {
     #[arg(short = 'g', long = "glob", value_name = "GLOB")]
     pub glob: Vec<String>,
 
-    /// case-insensitive glob
-    #[arg(long = "iglob", value_name = "GLOB")]
-    pub iglob: Vec<String>,
-
     /// alias for -g GLOB (ripgrep/grep compatibility)
     #[arg(long = "include", value_name = "GLOB", hide = true)]
     pub include: Vec<String>,
@@ -189,21 +160,9 @@ pub struct Args {
     #[arg(long = "no-ignore")]
     pub no_ignore: bool,
 
-    /// don't respect .gitignore
-    #[arg(long = "no-ignore-vcs")]
-    pub no_ignore_vcs: bool,
-
-    /// additional ignore file (like .gitignore)
-    #[arg(long = "ignore-file", value_name = "PATH")]
-    pub ignore_file: Vec<PathBuf>,
-
     /// reduce filtering (-u: hidden, -uu: +no-ignore, -uuu: +binary)
     #[arg(short = 'u', long = "unrestricted", action = clap::ArgAction::Count)]
     pub unrestricted: u8,
-
-    /// follow symbolic links
-    #[arg(short = 'L', long = "follow")]
-    pub follow: bool,
 
     /// number of search threads (0 = auto)
     #[arg(short = 'j', long = "threads", value_name = "NUM")]
@@ -221,41 +180,35 @@ pub struct Args {
     #[arg(long = "sort", value_name = "CRITERION")]
     pub sort: Option<String>,
 
-    /// allow matches to span multiple lines
-    #[arg(long = "multiline")]
-    pub multiline: bool,
-
     /// paragraph scope, or repeatable word intersection (-p word1 -p word2)
     #[arg(short = 'p', long = "paragraphs", alias = "§", num_args = 0..=1, action = clap::ArgAction::Append, value_name = "WORD")]
     pub paragraphs: Option<Vec<String>>,
-
-    /// use memory-mapped I/O (auto: mmap files >= 1MB)
-    #[arg(long = "mmap")]
-    pub mmap: bool,
-
-    /// disable memory-mapped I/O
-    #[arg(long = "no-mmap")]
-    pub no_mmap: bool,
 
     /// generate shell completions (bash, zsh, fish, elvish, powershell)
     #[arg(long = "completions", value_name = "SHELL", hide = true)]
     pub completions: Option<clap_complete::Shell>,
 
-    /// scope for intersection (line, paragraph, file, or a boundary regex)
-    #[arg(short = 'd', long = "scope", value_name = "SCOPE")]
+    /// multiline mode: match across lines (equivalent to --scope multiline)
+    #[arg(short = 'M', long = "multiline")]
+    pub multiline: bool,
+
+    /// scope keyword for intersection: line, paragraph, file, multiline, block, indent
+    #[arg(long = "scope", value_name = "SCOPE",
+          value_parser = ["line", "paragraph", "file", "multiline", "block", "indent"],
+          conflicts_with = "scope_re")]
     pub scope: Option<String>,
+
+    /// custom scope boundary as a RE# pattern (terms must co-occur between delimiter occurrences)
+    #[arg(short = 's', long = "scope-re", value_name = "PATTERN")]
+    pub scope_re: Option<String>,
 
     /// find patterns within N lines of each other (use with --and)
     #[arg(short = 'P', long = "near", value_name = "NUM")]
     pub near: Option<usize>,
 
     /// stop after NUM total matches across all files
-    #[arg(short = 'M', long = "max-total", value_name = "NUM")]
+    #[arg(long = "max-total", value_name = "NUM")]
     pub max_total: Option<usize>,
-
-    /// deduplicate matched strings (useful with -o)
-    #[arg(long = "unique")]
-    pub unique: bool,
 
     /// print summary stats (files, matches, lines, time)
     #[arg(long = "stats")]
@@ -277,10 +230,6 @@ pub struct Args {
     #[arg(long = "show-scope")]
     pub show_scope: bool,
 
-    /// truncate long lines to fit terminal width
-    #[arg(long = "trim")]
-    pub trim: bool,
-
     /// output file:line:col:text for editor integration (one line per match)
     #[arg(long = "vimgrep")]
     pub vimgrep: bool,
@@ -293,10 +242,6 @@ pub struct Args {
     #[arg(long = "offset", value_name = "N")]
     pub offset: Option<usize>,
 
-    /// print only the total match count as a plain number (machine-readable)
-    #[arg(long = "count-matches")]
-    pub count_matches: bool,
-
     /// print help
     #[arg(long = "help", action = clap::ArgAction::Help)]
     pub help: Option<bool>,
@@ -305,17 +250,17 @@ pub struct Args {
     #[arg(short = 'h', long = "no-filename")]
     pub no_filename: bool,
 
-    /// print all lines, highlighting matches
-    #[arg(long = "passthru")]
-    pub passthru: bool,
+    /// match whole words only (wraps each pattern with \b...\b)
+    #[arg(short = 'w', long = "word-regexp")]
+    pub word_regexp: bool,
 
-    /// skip lines longer than NUM columns
-    #[arg(long = "max-columns", value_name = "NUM")]
-    pub max_columns: Option<usize>,
+    /// invert: output lines that do NOT match (line scope only)
+    #[arg(short = 'v', long = "invert-match")]
+    pub invert_match: bool,
 
-    /// separator between context groups (default: --)
-    #[arg(long = "context-separator", value_name = "SEP", default_value = "--")]
-    pub context_separator: String,
+    /// print the compiled RE# pattern(s) and exit
+    #[arg(long = "show-pattern")]
+    pub show_pattern: bool,
 }
 
 impl Args {
@@ -340,8 +285,14 @@ impl Args {
         }
     }
 
+    pub fn is_multiline_scope(&self) -> bool {
+        matches!(self.effective_scope(), "multiline" | "custom")
+    }
+
     pub fn effective_scope(&self) -> &str {
-        if let Some(ref scope) = self.scope {
+        if self.scope_re.is_some() {
+            "custom"
+        } else if let Some(ref scope) = self.scope {
             scope.as_str()
         } else if self.is_paragraph_mode() {
             "paragraph"
@@ -372,7 +323,7 @@ impl Args {
 
         if total_terms > 0 {
             if !self.regexp.is_empty() || !self.pattern_file.is_empty() {
-                anyhow::bail!("-e/-f cannot be combined with -W/-p/-F word patterns");
+                anyhow::bail!("-e/--file cannot be combined with -W/-p/-F word patterns");
             }
             if self.near.is_some() && total_terms < 2 {
                 anyhow::bail!("--near requires at least 2 terms (use -W, --and, or & in pattern)");
@@ -386,7 +337,7 @@ impl Args {
         // -e patterns
         patterns.extend(self.regexp.iter().cloned());
 
-        // -f patterns
+        // --file patterns
         for path in &self.pattern_file {
             let contents = std::fs::read_to_string(path)
                 .map_err(|e| anyhow::anyhow!("failed to read pattern file {}: {e}", path.display()))?;
@@ -397,7 +348,7 @@ impl Args {
             }
         }
 
-        // positional pattern (only if no -e/-f)
+        // positional pattern (only if no -e/--file)
         if patterns.is_empty() {
             match &self.pattern {
                 Some(p) => patterns.push(p.clone()),
@@ -500,10 +451,11 @@ impl Args {
 
         // -F adds literal string constraints (pre-escaped)
         for f in fixed {
+            let core = self.wrap_word(resharp::escape(f));
             if single {
-                terms.push(resharp::escape(f));
+                terms.push(core);
             } else {
-                terms.push(format!("(_*{escaped}_*)", escaped = resharp::escape(f)));
+                terms.push(format!("(_*{core}_*)"));
             }
         }
 
@@ -592,7 +544,11 @@ impl Args {
             "line" => format!("({combined})&(.*)"),
             "paragraph" => format!("({combined})&((?<=\\A|\n\n)(_*&~(_*\n\n_*)&~(\n_*|_*\n))(?=\n\n|\n\\z|\\z))"),
             "file" | "multiline" => combined,
-            custom => format!("({combined})&~(_*{custom}_*)"),
+            "custom" => {
+                let delim = self.scope_re.as_deref().expect("scope=custom implies scope_re is set");
+                format!("({combined})&~(_*{delim}_*)")
+            }
+            other => panic!("unhandled scope keyword: {other}"),
         };
         self.apply_near(scoped)
     }
@@ -604,20 +560,20 @@ impl Args {
         }
     }
 
+    fn wrap_word(&self, pattern: String) -> String {
+        if self.word_regexp {
+            format!("(\\b({pattern})\\b)")
+        } else {
+            pattern
+        }
+    }
+
     fn wrap_pattern(&self, mut pattern: String, wild: Option<&str>) -> String {
         if self.is_fixed_strings() {
             pattern = resharp::escape(&pattern);
-        } else if self.raw {
-            pattern = Self::escape_resharp(&pattern);
         }
 
-        if self.word_regexp {
-            pattern = format!(r"\b({pattern})\b");
-        }
-
-        if self.line_regexp {
-            pattern = format!("^({pattern})$");
-        }
+        pattern = self.wrap_word(pattern);
 
         if self.should_ignore_case(&pattern) {
             pattern = format!("(?i){pattern}");
@@ -631,25 +587,6 @@ impl Args {
         }
 
         pattern
-    }
-
-    fn escape_resharp(pattern: &str) -> String {
-        let mut out = String::with_capacity(pattern.len());
-        let mut chars = pattern.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\\' {
-                out.push('\\');
-                if chars.peek().is_some() {
-                    out.push(chars.next().unwrap());
-                }
-            } else if c == '_' || c == '&' || c == '~' {
-                out.push('\\');
-                out.push(c);
-            } else {
-                out.push(c);
-            }
-        }
-        out
     }
 
     fn should_ignore_case(&self, pattern: &str) -> bool {
@@ -695,9 +632,6 @@ impl Args {
     }
 
     pub fn show_line_number(&self, multi_file: bool) -> bool {
-        if self.no_line_number {
-            return false;
-        }
         self.line_number || multi_file
     }
 
@@ -720,12 +654,6 @@ impl Args {
     }
 
     pub fn use_mmap(&self, file_size: u64) -> bool {
-        if self.no_mmap {
-            return false;
-        }
-        if self.mmap {
-            return true;
-        }
         file_size >= 1024 * 1024
     }
 
@@ -776,13 +704,25 @@ impl Args {
 pub fn parse() -> anyhow::Result<Args> {
     let mut args = Args::parse();
 
+    if args.invert_match {
+        let bad = args.multiline
+            || args.near.is_some()
+            || args.scope_re.is_some()
+            || args.paragraphs.is_some()
+            || args.file_scope
+            || matches!(args.scope.as_deref(), Some(s) if s != "line");
+        if bad {
+            anyhow::bail!("-v/--invert-match only works with line scope (drop -M/-p/-f/--near/--scope/--scope-re)");
+        }
+    }
+
     // --include/--exclude are aliases for -g GLOB / -g !GLOB
     args.glob.extend(std::mem::take(&mut args.include));
     for g in std::mem::take(&mut args.exclude) {
         args.glob.push(format!("!{g}"));
     }
 
-    // when -e/-f/-F is used or -p has words, positional PATTERN is a PATH
+    // when -e/--file/-F is used or -p has words, positional PATTERN is a PATH
     let has_words = args.paragraphs.as_ref().map_or(false, |v| !v.is_empty())
         || args.fixed_strings.as_ref().map_or(false, |v| !v.is_empty());
     if (!args.regexp.is_empty() || !args.pattern_file.is_empty() || has_words || args.files)
@@ -790,6 +730,16 @@ pub fn parse() -> anyhow::Result<Args> {
     {
         let pat = args.pattern.take().unwrap();
         args.paths.insert(0, PathBuf::from(pat));
+    }
+
+    // -M is shorthand for --scope multiline
+    if args.multiline && args.scope.is_none() {
+        args.scope = Some("multiline".to_string());
+    }
+
+    // -f is shorthand for --scope file
+    if args.file_scope && args.scope.is_none() {
+        args.scope = Some("file".to_string());
     }
 
     // -a or -N without a base pattern: positional arg is a path, not a pattern
@@ -832,7 +782,6 @@ pub fn parse() -> anyhow::Result<Args> {
         && !args.files_without_match
         && !args.quiet
         && !args.json
-        && !args.count_matches
     {
         args.files_with_matches = true;
     }

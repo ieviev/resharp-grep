@@ -77,6 +77,15 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
 
     // content search mode
     let (pattern, not_patterns) = args.resolve_pattern()?;
+
+    if args.show_pattern {
+        println!("{pattern}");
+        for np in &not_patterns {
+            println!("NOT: {np}");
+        }
+        return Ok((true, false, None));
+    }
+
     let re = resharp::Regex::with_options(&pattern, args.engine_opts())
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let not_res: Vec<resharp::Regex> = not_patterns
@@ -111,7 +120,7 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
 
     let scope_needs_files = args.scope.as_deref() == Some("file") || args.files_without_match;
     if args.paths.is_empty() && is_readable_stdin() && !scope_needs_files {
-        let (found, match_count) = search::search_stdin(
+        let (found, _match_count) = search::search_stdin(
             &re,
             highlight_re.as_ref(),
             &not_res,
@@ -119,9 +128,6 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
             &printer_opts,
             color_choice,
         )?;
-        if args.count_matches {
-            println!("{match_count}");
-        }
         return Ok((found, false, None));
     }
 
@@ -138,9 +144,6 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
         &printer_opts,
         color_choice,
     )?;
-    if args.count_matches {
-        println!("{}", stats.match_count);
-    }
     if args.stats {
         stats.elapsed = start.elapsed();
         print_stats(&stats, false);
