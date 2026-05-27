@@ -1,29 +1,28 @@
 # re
 
-grep finds one thing at a time. `re` finds where multiple things appear together - on the same line, in the same paragraph, within N lines of each other, or anywhere in the same file. powered by [RE#](https://github.com/ieviev/resharp).
+grep finds one thing at a time. `re` finds where multiple things appear together: on the same line, in the same paragraph, within N lines of each other, or anywhere in the same file. powered by [RE#](https://github.com/ieviev/resharp).
 
 [install](#install) | [web playground](https://ieviev.github.io/resharp-webapp/)
+
+> flags are not a drop-in match for grep/rg. some short flags are repurposed to expose RE# operators (e.g. `-a`, `-N`, `-S`, `-s`, `-d`, `-p`, `-f`, `-M`).
 
 ## why re
 
 ```sh
 # find unsafe code that unwraps within 5 lines - potential panics in unsafe blocks
-re --near 5 --and unsafe --and unwrap src/
+re --near 5 -a unsafe -a unwrap src/
 
 # find errors mentioning timeout, but filter out debug and trace noise
-re error --not debug --not trace src/
+re error -N debug -N trace src/
 
 # list files that use both tokio and diesel - mixed async/sync code
 re -f -a tokio -a diesel src/
 
-# find paragraphs that mention both password and plaintext - credential exposure
-re -p password -p plaintext .
-
 # search within YAML sections for entries that have both host and port
-re -s '---' --and host --and port config/   # -s is --scope-re
+re -S '---' -a host -a port config/
 
 # find markdown sections that discuss both API and deprecation
-re -s '\n## ' --and API --and deprecated docs/
+re -S '\n## ' -a API -a deprecated docs/
 ```
 
 with grep, each of these would require chaining multiple commands and losing file context, line numbers, and highlighting. `re` does it in one shot, and faster than any other tool out there.
@@ -40,9 +39,9 @@ re -F 'std::io' src/                      # literal string (no regex)
 
 the difference shows up when you need more than one term.
 
-## boolean constraints
+## constraints
 
-`-a` requires a term, `-N` excludes one. all terms must co-occur within the current scope (line by default).
+`-a` requires a term, `-N` excludes one. all terms must co-occur within the same **scope** (same line by default).
 
 ```sh
 # lines containing both "error" and "timeout"
@@ -62,44 +61,33 @@ re -F 'std::io' -F 'Error' src/
 | `-e` | union - match any of the patterns | `(pat1)\|(pat2)` |
 | `-F` / `--lit` | match must contain this literal string | `&(_*literal_*)` |
 
-## carving the match span: `-d`
-
-`-d PAT` treats PAT as a delimiter: the match span cannot contain it. useful with `-o` for splitting a line; for filtering whole lines use `-N`.
-
-```sh
-$ printf 'a,b,c\n' | re -o -d ','
-a
-b
-c
-```
-
 ## scope
 
-by default, all terms must appear on the same line. `--scope` widens the window.
+the scope is the window that `-a` / `-N` terms must share. by default it is a single line. widen it to a paragraph, a proximity window, a whole file, or a custom delimiter.
 
-| scope | flag | terms must appear within |
-|-------|------|--------------------------|
-| line | (default) | a single line |
-| paragraph | `-p` | a text block separated by blank lines |
-| file | `-f` | anywhere in the same file (lists filenames) |
-| proximity | `--near N` | N lines of each other |
-| custom | `--scope-re '<delim>'` | text between occurrences of the delimiter regex |
+| scope | flag | window |
+|-------|------|--------|
+| line | (default) | one line |
+| paragraph | `-p` | a block separated by blank lines |
+| proximity | `--near N` | any N consecutive lines |
+| file | `-f` | the entire file (prints filenames) |
+| custom | `-S PAT` | text between occurrences of `PAT` |
+| gated | `-S PAT -s SUB` | only `-S` scopes that also contain `SUB` |
+
+examples:
 
 ```sh
-# find text blocks that mention both "error" and "retry"
-re -p error -p retry logs/
-
-# list files that import both serde and async-trait
-re -f -a serde -a async-trait src/
-
-# find markdown sections discussing both API and deprecation
-re -s '\n## ' -a API -a deprecated docs/
-
-# find TODO and FIXME within 3 lines of each other - related work items
-re --near 3 -a TODO -a FIXME .
+re -p -a error -a retry logs/                       # paragraph mentions both
+re --near 3 -a TODO -a FIXME .                      # within 3 lines
+re -f -a serde -a async-trait src/                  # same file
+re -S '\n## ' -a API -a deprecated docs/            # markdown sections
+re -S '\n## ' -s deprecated -a API -a removed docs/ # only deprecated sections
 ```
 
-`-p word` is shorthand for `--scope paragraph -a word`.
+notes:
+- `-S` delimits the search window. `-d PAT` is different: it delimits the match span (the engine emits regions free of `PAT`). see the section above.
+- `-p` is shorthand for `--scope paragraph`.
+- use `--show-pattern` to inspect the compiled RE# for any scope combination.
 
 ## raw patterns
 
@@ -120,7 +108,7 @@ re '(.*error.*)&~(.*debug.*)' .
 re '([0-9a-f]+)&(.*[0-9].*)&(.*[a-f].*)'
 ```
 
-use `-R` for standard regex mode or `-F` for fixed strings.
+use `-F` for fixed strings.
 
 try patterns interactively in the [web playground](https://ieviev.github.io/resharp-webapp/).
 
@@ -131,7 +119,7 @@ most ripgrep flags work the same. the key differences:
 | ripgrep | re | notes |
 |---------|-----|--------|
 | `-a` processes binary files | `-a` means `--and` (require term) | use `-uuu` for binary file processing |
-| standard regex only | adds `&` (intersection) and `~` (complement) | use `-R` to disable |
+| standard regex only | RE# regex with `&` (intersection) and `~` (complement) | superset of standard regex |
 
 ## exit codes
 

@@ -1,7 +1,20 @@
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser, ValueEnum};
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum Scope {
+    Line,
+    Paragraph,
+    File,
+    Multiline,
+    Block,
+    Indent,
+    #[value(skip)]
+    Custom,
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -14,9 +27,10 @@ use clap::Parser;
   re error -N debug -N trace src/           errors, filtering out debug and trace noise
   re --near 5 -a unsafe -a unwrap src/      unsafe code that unwraps within 5 lines
   re -f -a tokio -a diesel src/             files using both tokio and diesel
-  re -p password -p plaintext .             paragraphs mentioning both password and plaintext
+  re -p -a password -a plaintext .          paragraphs mentioning both password and plaintext
   re -s '\\n## ' -a API -a deprecated docs/ markdown sections discussing both API and deprecation
-  re -s '---' -a host -a port config/       YAML sections with both host and port (-s is --scope-re)
+  re -S '---' -a host -a port config/       YAML sections with both host and port (-S is --scope-re)
+  re -S '^.' -s 'dependencies' name Cargo.toml      search name inside the [dependencies] section
   re --json TODO src/                       JSON output, one object per match",
     after_help = "see https://github.com/ieviev/resharp for the pattern language."
 )]
@@ -48,10 +62,6 @@ pub struct Args {
     /// case sensitive search (overrides -i)
     #[arg(long = "case-sensitive")]
     pub case_sensitive: bool,
-
-    /// smart case (insensitive unless pattern has uppercase)
-    #[arg(short = 'S', long = "smart-case")]
-    pub smart_case: bool,
 
     /// stop after NUM matches per file
     #[arg(short = 'm', long = "max-count", value_name = "NUM")]
@@ -180,9 +190,9 @@ pub struct Args {
     #[arg(long = "sort", value_name = "CRITERION")]
     pub sort: Option<String>,
 
-    /// paragraph scope, or repeatable word intersection (-p word1 -p word2)
-    #[arg(short = 'p', long = "paragraphs", alias = "§", num_args = 0..=1, action = clap::ArgAction::Append, value_name = "WORD")]
-    pub paragraphs: Option<Vec<String>>,
+    /// paragraph scope (equivalent to --scope paragraph)
+    #[arg(short = 'p', long = "paragraphs", alias = "§")]
+    pub paragraph_scope: bool,
 
     /// generate shell completions (bash, zsh, fish, elvish, powershell)
     #[arg(long = "completions", value_name = "SHELL", hide = true)]
@@ -193,14 +203,16 @@ pub struct Args {
     pub multiline: bool,
 
     /// scope keyword for intersection: line, paragraph, file, multiline, block, indent
-    #[arg(long = "scope", value_name = "SCOPE",
-          value_parser = ["line", "paragraph", "file", "multiline", "block", "indent"],
-          conflicts_with = "scope_re")]
-    pub scope: Option<String>,
+    #[arg(long = "scope", value_name = "SCOPE", value_enum, conflicts_with = "scope_re")]
+    pub scope: Option<Scope>,
 
     /// custom scope boundary as a RE# pattern (terms must co-occur between delimiter occurrences)
-    #[arg(short = 's', long = "scope-re", value_name = "PATTERN")]
+    #[arg(short = 'S', long = "scope-re", value_name = "PATTERN")]
     pub scope_re: Option<String>,
+
+    /// require PAT to appear inside the --scope-re span (gates a separate pre-filter, repeatable)
+    #[arg(short = 's', long = "scope-add", value_name = "PATTERN", requires = "scope_re")]
+    pub scope_add: Vec<String>,
 
     /// find patterns within N lines of each other (use with --and)
     #[arg(short = 'P', long = "near", value_name = "NUM")]
@@ -275,48 +287,49 @@ impl Args {
         }
     }
 
-    pub fn is_paragraph_mode(&self) -> bool {
-        self.paragraphs.is_some()
-    }
-
     pub fn engine_opts(&self) -> resharp::RegexOptions {
         resharp::RegexOptions {
             ..Default::default()
         }
     }
 
-    pub fn is_multiline_scope(&self) -> bool {
-        matches!(self.effective_scope(), "multiline" | "custom")
+    pub fn has_scope_add(&self) -> bool {
+        !self.scope_add.is_empty()
     }
 
-    pub fn effective_scope(&self) -> &str {
-        if self.scope_re.is_some() {
-            "custom"
-        } else if let Some(ref scope) = self.scope {
-            scope.as_str()
-        } else if self.is_paragraph_mode() {
-            "paragraph"
+    /// patterns each stage1 span must contain (post-wrapped for case/word flags)
+    pub fn scope_add_patterns(&self) -> Vec<String> {
+        self.scope_add.iter().map(|p| self.wrap_pattern(p.clone(), None)).collect()
+    }
+
+    pub fn is_multiline_scope(&self) -> bool {
+        matches!(self.effective_scope(), Scope::Multiline | Scope::Custom)
+    }
+
+    pub fn effective_scope(&self) -> Scope {
+        if self.scope_re.is_some() && self.scope_add.is_empty() {
+            Scope::Custom
+        } else if let Some(scope) = self.scope {
+            scope
+        } else if self.paragraph_scope {
+            Scope::Paragraph
         } else if self.multiline || self.near.is_some() {
-            "multiline"
+            Scope::Multiline
         } else {
-            "line"
+            Scope::Line
         }
     }
 
     /// returns (pattern, file_scope_not_patterns)
     pub fn resolve_pattern(&self) -> anyhow::Result<(String, Vec<String>)> {
-        let para: Vec<&str> = match &self.paragraphs {
-            Some(w) => w.iter().map(|s| s.as_str()).collect(),
-            None => vec![],
-        };
         // -a is a modifier when a base pattern exists, standalone otherwise
         let has_base = self.pattern.is_some()
             || !self.regexp.is_empty()
             || !self.pattern_file.is_empty();
         let words: Vec<&str> = if has_base {
-            para
+            vec![]
         } else {
-            para.into_iter().chain(self.and.iter().map(|s| s.as_str())).collect()
+            self.and.iter().map(|s| s.as_str()).collect()
         };
         let fixed = self.fixed_words();
         let total_terms = words.len() + fixed.len();
@@ -354,6 +367,8 @@ impl Args {
                 Some(p) => patterns.push(p.clone()),
                 None => {
                     if self.exclude_match.is_empty() {
+                        Args::command().print_help().ok();
+                        eprintln!();
                         anyhow::bail!("no pattern provided");
                     }
                     // -E alone: body defaults to _*, narrowed by apply_excludes
@@ -400,9 +415,8 @@ impl Args {
     pub fn resolve_highlight_pattern(&self) -> Option<String> {
         let has_constraints = !self.and.is_empty()
             || !self.not.is_empty()
-            || self.paragraphs.as_ref().map_or(false, |v| !v.is_empty())
             || self.fixed_strings.as_ref().map_or(false, |v| !v.is_empty())
-            || self.effective_scope() != "line";
+            || self.effective_scope() != Scope::Line;
 
         if !has_constraints {
             return None;
@@ -418,11 +432,6 @@ impl Args {
         }
         for a in &self.and {
             terms.push(self.wrap_pattern(a.clone(), None));
-        }
-        if let Some(ref words) = self.paragraphs {
-            for w in words {
-                terms.push(self.wrap_pattern(w.clone(), None));
-            }
         }
         for f in self.fixed_words() {
             terms.push(resharp::escape(f));
@@ -442,7 +451,7 @@ impl Args {
         let fixed = self.fixed_words();
         let single = words.len() + fixed.len() == 1
             && self.not.is_empty()
-            && self.effective_scope() == "line";
+            && self.effective_scope() == Scope::Line;
 
         let mut terms: Vec<String> = words
             .iter()
@@ -461,11 +470,11 @@ impl Args {
 
         let mut combined = terms.join("&");
         let scope = self.effective_scope();
-        let wild = if scope == "line" { ".*" } else { "_*" };
+        let wild = if scope == Scope::Line { ".*" } else { "_*" };
         let file_nots = self.apply_nots(&mut combined, scope, wild);
 
         // line scope needs anchoring when negation complements were baked in
-        if file_nots.is_empty() && !self.not.is_empty() && scope == "line" {
+        if file_nots.is_empty() && !self.not.is_empty() && scope == Scope::Line {
             combined = format!("^({combined})$");
         }
 
@@ -494,10 +503,10 @@ impl Args {
         }
 
         let scope = self.effective_scope();
-        let wild = if scope == "line" { ".*" } else { "_*" };
+        let wild = if scope == Scope::Line { ".*" } else { "_*" };
 
         // file scope with only negations: extract as post-filters, leave pattern unchanged
-        if scope == "file" && has_not && !has_and {
+        if scope == Scope::File && has_not && !has_and {
             let nots = self.not.iter()
                 .map(|n| self.wrap_pattern(n.clone(), Some(wild)))
                 .collect();
@@ -512,14 +521,14 @@ impl Args {
 
         let file_nots = self.apply_nots(&mut combined, scope, wild);
 
-        if scope == "line" {
+        if scope == Scope::Line {
             combined = format!("^({combined})$");
         }
 
         (combined, file_nots)
     }
 
-    fn apply_nots(&self, combined: &mut String, scope: &str, wild: &str) -> Vec<String> {
+    fn apply_nots(&self, combined: &mut String, scope: Scope, wild: &str) -> Vec<String> {
         if self.not.is_empty() {
             return vec![];
         }
@@ -528,7 +537,7 @@ impl Args {
             .map(|n| self.wrap_pattern(n.clone(), Some(wild)))
             .collect();
 
-        if scope == "file" {
+        if scope == Scope::File {
             return nots;
         }
 
@@ -541,14 +550,14 @@ impl Args {
 
     fn apply_scope_boundary(&self, combined: String) -> String {
         let scoped = match self.effective_scope() {
-            "line" => format!("({combined})&(.*)"),
-            "paragraph" => format!("({combined})&((?<=\\A|\n\n)(_*&~(_*\n\n_*)&~(\n_*|_*\n))(?=\n\n|\n\\z|\\z))"),
-            "file" | "multiline" => combined,
-            "custom" => {
+            Scope::Line => format!("({combined})&(.*)"),
+            Scope::Paragraph => format!("({combined})&((?<=\\A|\n\n)(_*&~(_*\n\n_*)&~(\n_*|_*\n))(?=\n\n|\n\\z|\\z))"),
+            Scope::File | Scope::Multiline => combined,
+            Scope::Custom => {
                 let delim = self.scope_re.as_deref().expect("scope=custom implies scope_re is set");
                 format!("({combined})&~(_*{delim}_*)")
             }
-            other => panic!("unhandled scope keyword: {other}"),
+            other => panic!("unhandled scope keyword: {other:?}"),
         };
         self.apply_near(scoped)
     }
@@ -589,17 +598,11 @@ impl Args {
         pattern
     }
 
-    fn should_ignore_case(&self, pattern: &str) -> bool {
+    fn should_ignore_case(&self, _pattern: &str) -> bool {
         if self.case_sensitive {
             return false;
         }
-        if self.ignore_case {
-            return true;
-        }
-        if self.smart_case {
-            return !pattern.chars().any(|c| c.is_uppercase());
-        }
-        false
+        self.ignore_case
     }
 
     pub fn color_choice(&self) -> termcolor::ColorChoice {
@@ -708,9 +711,9 @@ pub fn parse() -> anyhow::Result<Args> {
         let bad = args.multiline
             || args.near.is_some()
             || args.scope_re.is_some()
-            || args.paragraphs.is_some()
+            || args.paragraph_scope
             || args.file_scope
-            || matches!(args.scope.as_deref(), Some(s) if s != "line");
+            || matches!(args.scope, Some(s) if s != Scope::Line);
         if bad {
             anyhow::bail!("-v/--invert-match only works with line scope (drop -M/-p/-f/--near/--scope/--scope-re)");
         }
@@ -722,9 +725,8 @@ pub fn parse() -> anyhow::Result<Args> {
         args.glob.push(format!("!{g}"));
     }
 
-    // when -e/--file/-F is used or -p has words, positional PATTERN is a PATH
-    let has_words = args.paragraphs.as_ref().map_or(false, |v| !v.is_empty())
-        || args.fixed_strings.as_ref().map_or(false, |v| !v.is_empty());
+    // when -e/--file/-F is used, positional PATTERN is a PATH
+    let has_words = args.fixed_strings.as_ref().map_or(false, |v| !v.is_empty());
     if (!args.regexp.is_empty() || !args.pattern_file.is_empty() || has_words || args.files)
         && args.pattern.is_some()
     {
@@ -734,17 +736,17 @@ pub fn parse() -> anyhow::Result<Args> {
 
     // -M is shorthand for --scope multiline
     if args.multiline && args.scope.is_none() {
-        args.scope = Some("multiline".to_string());
+        args.scope = Some(Scope::Multiline);
     }
 
     // -f is shorthand for --scope file
     if args.file_scope && args.scope.is_none() {
-        args.scope = Some("file".to_string());
+        args.scope = Some(Scope::File);
     }
 
     // -a or -N without a base pattern: positional arg is a path, not a pattern
     let only_constraints = !args.and.is_empty()
-        || (args.scope.as_deref() == Some("file") && !args.not.is_empty());
+        || (args.scope == Some(Scope::File) && !args.not.is_empty());
     if only_constraints
         && args.pattern.is_some()
         && args.regexp.is_empty()
@@ -758,9 +760,9 @@ pub fn parse() -> anyhow::Result<Args> {
         }
     }
 
-    // --scope paragraph is equivalent to -p (without words)
-    if args.scope.as_deref() == Some("paragraph") && args.paragraphs.is_none() {
-        args.paragraphs = Some(Vec::new());
+    // -p is shorthand for --scope paragraph
+    if args.paragraph_scope && args.scope.is_none() {
+        args.scope = Some(Scope::Paragraph);
     }
 
     // --scope file with only --not terms: invert to files-without-match
@@ -768,15 +770,14 @@ pub fn parse() -> anyhow::Result<Args> {
         || !args.regexp.is_empty()
         || !args.pattern_file.is_empty()
         || !args.and.is_empty()
-        || args.paragraphs.as_ref().map_or(false, |v| !v.is_empty())
         || args.fixed_strings.as_ref().map_or(false, |v| !v.is_empty());
-    if args.scope.as_deref() == Some("file") && !args.not.is_empty() && !has_positive {
+    if args.scope == Some(Scope::File) && !args.not.is_empty() && !has_positive {
         args.regexp = std::mem::take(&mut args.not);
         args.files_without_match = true;
     }
 
     // --scope file implies -l unless the user asked for specific output
-    if args.scope.as_deref() == Some("file")
+    if args.scope == Some(Scope::File)
         && !args.count
         && !args.only_matching
         && !args.files_without_match

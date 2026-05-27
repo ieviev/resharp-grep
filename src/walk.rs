@@ -34,8 +34,11 @@ pub fn print_type_list() {
 pub fn walk_and_search(
     re: &resharp::Regex,
     highlight_re: Option<&resharp::Regex>,
+    stage1: Option<&search::Stage1>,
     pattern: &str,
     highlight_pattern: Option<&str>,
+    stage1_delim_pattern: Option<&str>,
+    stage1_add_patterns: &[String],
     not_patterns: &[String],
     args: &Args,
     paths: &[PathBuf],
@@ -53,11 +56,11 @@ pub fn walk_and_search(
     if use_parallel {
         let threads = args.threads.unwrap_or(0);
         let walker = build_walker(args, paths, threads)?;
-        walk_parallel(walker, pattern, highlight_pattern, not_patterns, args, printer_opts, color_choice, max_filesize)
+        walk_parallel(walker, pattern, highlight_pattern, stage1_delim_pattern, stage1_add_patterns, not_patterns, args, printer_opts, color_choice, max_filesize)
     } else {
         let not_res = compile_not_patterns(not_patterns, args)?;
         let walker = build_walker(args, paths, 1)?;
-        walk_sequential(walker, sorted, re, highlight_re, &not_res, args, printer_opts, color_choice, max_filesize)
+        walk_sequential(walker, sorted, re, highlight_re, stage1, &not_res, args, printer_opts, color_choice, max_filesize)
     }
 }
 
@@ -128,6 +131,7 @@ fn walk_sequential(
     sorted: bool,
     re: &resharp::Regex,
     highlight_re: Option<&resharp::Regex>,
+    stage1: Option<&search::Stage1>,
     not_res: &[resharp::Regex],
     args: &Args,
     printer_opts: &PrinterOpts,
@@ -154,7 +158,7 @@ fn walk_sequential(
 
         let mut buf = bufwtr.buffer();
         let (found, had_error, count, lines) = search::search_file_to_writer(
-            re, highlight_re, not_res, path, args, printer_opts, &mut buf,
+            re, highlight_re, stage1, not_res, path, args, printer_opts, &mut buf,
             effective_max,
         )?
 ;
@@ -206,7 +210,7 @@ fn walk_entries(walker: &WalkBuilder, max_filesize: Option<u64>) -> Vec<PathBuf>
     walker.build().filter_map(|entry| {
         let entry = match entry {
             Ok(e) => e,
-            Err(err) => { eprintln!("resharp: {err}"); return None; }
+            Err(err) => { eprintln!("re: {err}"); return None; }
         };
         if should_skip_entry(&entry, max_filesize) { return None; }
         Some(entry.into_path())
@@ -227,6 +231,7 @@ fn process_parallel_entry(
     bufwtr: &BufferWriter,
     re: &resharp::Regex,
     highlight_re: Option<&resharp::Regex>,
+    stage1: Option<&search::Stage1>,
     not_res: &[resharp::Regex],
     args: &Args,
     printer_opts: &PrinterOpts,
@@ -242,7 +247,7 @@ fn process_parallel_entry(
     let entry = match entry {
         Ok(e) => e,
         Err(err) => {
-            eprintln!("resharp: {err}");
+            eprintln!("re: {err}");
             return ignore::WalkState::Continue;
         }
     };
@@ -252,7 +257,7 @@ fn process_parallel_entry(
     files_searched.fetch_add(1, Ordering::Relaxed);
     let effective_max = args.effective_max(total_matches.load(Ordering::Relaxed));
     let mut buf = bufwtr.buffer();
-    match search::search_file_to_writer(re, highlight_re, not_res, entry.path(), args, printer_opts, &mut buf, effective_max) {
+    match search::search_file_to_writer(re, highlight_re, stage1, not_res, entry.path(), args, printer_opts, &mut buf, effective_max) {
         Ok((found, had_error, count, lines)) => {
             total_lines.fetch_add(lines, Ordering::Relaxed);
             if had_error { had_errors.store(true, Ordering::Relaxed); }
@@ -266,7 +271,7 @@ fn process_parallel_entry(
             }
         }
         Err(err) => {
-            eprintln!("resharp: {}: {err}", entry.path().display());
+            eprintln!("re: {}: {err}", entry.path().display());
         }
     }
     ignore::WalkState::Continue
@@ -276,6 +281,8 @@ fn walk_parallel(
     walker: WalkBuilder,
     pattern: &str,
     highlight_pattern: Option<&str>,
+    stage1_delim_pattern: Option<&str>,
+    stage1_add_patterns: &[String],
     not_patterns: &[String],
     args: &Args,
     printer_opts: &PrinterOpts,
@@ -293,6 +300,8 @@ fn walk_parallel(
     let max_total = args.max_total;
     let pattern = pattern.to_string();
     let highlight_pattern = highlight_pattern.map(|s| s.to_string());
+    let stage1_delim_pattern = stage1_delim_pattern.map(|s| s.to_string());
+    let stage1_add_patterns: Vec<String> = stage1_add_patterns.to_vec();
     let not_patterns: Vec<String> = not_patterns.to_vec();
 
     walker.build_parallel().run(|| {
@@ -306,29 +315,41 @@ fn walk_parallel(
         let re = match resharp::Regex::with_options(&pattern, args.engine_opts()) {
             Ok(re) => re,
             Err(e) => {
-                eprintln!("resharp: failed to compile pattern: {e}");
+                eprintln!("re: failed to compile pattern: {e}");
                 return Box::new(move |_| ignore::WalkState::Quit);
             }
         };
         let highlight_re = highlight_pattern.as_ref().and_then(|hp| {
             resharp::Regex::with_options(hp, args.engine_opts()).ok()
         });
+        let stage1_delim_re = stage1_delim_pattern.as_ref().and_then(|sp| {
+            resharp::Regex::with_options(sp, args.engine_opts()).ok()
+        });
+        let stage1_add_res: Vec<resharp::Regex> = stage1_add_patterns.iter()
+            .filter_map(|p| resharp::Regex::with_options(p, args.engine_opts()).ok())
+            .collect();
         let not_res: Vec<resharp::Regex> = match not_patterns.iter()
             .map(|p| resharp::Regex::with_options(p, args.engine_opts()))
             .collect::<Result<Vec<_>, _>>() {
                 Ok(v) => v,
                 Err(e) => {
-                    eprintln!("resharp: failed to compile --not pattern: {e}");
+                    eprintln!("re: failed to compile --not pattern: {e}");
                     return Box::new(move |_| ignore::WalkState::Quit);
                 }
             };
-        Box::new(move |entry| process_parallel_entry(
-            entry, quiet, max_total, max_filesize,
-            &found_any, &had_errors, &total_matches,
-            &files_searched, &files_matched, &total_lines,
-            &bufwtr, &re, highlight_re.as_ref(), &not_res,
-            args, printer_opts,
-        ))
+        Box::new(move |entry| {
+            let stage1 = stage1_delim_re.as_ref().map(|d| search::Stage1 {
+                delim: d,
+                must_contain: &stage1_add_res,
+            });
+            process_parallel_entry(
+                entry, quiet, max_total, max_filesize,
+                &found_any, &had_errors, &total_matches,
+                &files_searched, &files_matched, &total_lines,
+                &bufwtr, &re, highlight_re.as_ref(), stage1.as_ref(), &not_res,
+                args, printer_opts,
+            )
+        })
     });
 
     let stats = Stats {
@@ -418,6 +439,7 @@ pub fn collect_files(
 
 pub fn collect_matching_files(
     re: &resharp::Regex,
+    stage1: Option<&search::Stage1>,
     not_res: &[resharp::Regex],
     args: &Args,
     paths: &[PathBuf],
@@ -434,7 +456,7 @@ pub fn collect_matching_files(
         let data = match std::fs::read(path) {
             Ok(d) => d,
             Err(err) => {
-                eprintln!("resharp: {}: {err}", path.display());
+                eprintln!("re: {}: {err}", path.display());
                 continue;
             }
         };
@@ -445,9 +467,9 @@ pub fn collect_matching_files(
             continue;
         }
 
-        let sr = search::search_buffer(re, None, &data, args, None);
+        let sr = search::search_buffer(re, None, stage1, &data, args, None);
         if sr.had_error {
-            eprintln!("resharp: {}: DFA capacity exceeded, skipping", path.display());
+            eprintln!("re: {}: DFA capacity exceeded, skipping", path.display());
             continue;
         }
 

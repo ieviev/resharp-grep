@@ -20,7 +20,7 @@ fn main() -> ExitCode {
                     }
                 }
             }
-            let _ = writeln!(std::io::stderr(), "resharp: {err:#}");
+            let _ = writeln!(std::io::stderr(), "re: {err:#}");
             ExitCode::from(2)
         }
     }
@@ -41,10 +41,10 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
         return Ok((true, false, None));
     }
 
-    if args.scope.as_deref() == Some("block") {
+    if args.scope == Some(args::Scope::Block) {
         anyhow::bail!("--scope block requires --delimiters (not yet implemented)");
     }
-    if args.scope.as_deref() == Some("indent") {
+    if args.scope == Some(args::Scope::Indent) {
         anyhow::bail!("--scope indent is not yet implemented");
     }
 
@@ -103,10 +103,26 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
         })
         .transpose()?;
 
+    let stage1_delim_pattern: Option<String> = if args.has_scope_add() {
+        args.scope_re.clone()
+    } else { None };
+    let stage1_delim_re = stage1_delim_pattern
+        .as_ref()
+        .map(|sp| resharp::Regex::with_options(sp, args.engine_opts()).map_err(|e| anyhow::anyhow!("{e}")))
+        .transpose()?;
+    let stage1_add_patterns: Vec<String> = if args.has_scope_add() { args.scope_add_patterns() } else { Vec::new() };
+    let stage1_add_res: Vec<resharp::Regex> = stage1_add_patterns.iter()
+        .map(|p| resharp::Regex::with_options(p, args.engine_opts()).map_err(|e| anyhow::anyhow!("{e}")))
+        .collect::<anyhow::Result<_>>()?;
+    let stage1 = stage1_delim_re.as_ref().map(|d| search::Stage1 {
+        delim: d,
+        must_contain: &stage1_add_res,
+    });
+
     if has_exec {
         let paths = args.resolved_paths()?;
 
-        let (files, mut stats) = walk::collect_matching_files(&re, &not_res, &args, &paths)?;
+        let (files, mut stats) = walk::collect_matching_files(&re, stage1.as_ref(), &not_res, &args, &paths)?;
         let found = !files.is_empty();
         let exec_ok = walk::exec_on_files(args.exec.as_deref().unwrap(), &files)?;
         if args.stats {
@@ -118,11 +134,12 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
 
     let printer_opts = printer::PrinterOpts::from_args(&args);
 
-    let scope_needs_files = args.scope.as_deref() == Some("file") || args.files_without_match;
+    let scope_needs_files = args.scope == Some(args::Scope::File) || args.files_without_match;
     if args.paths.is_empty() && is_readable_stdin() && !scope_needs_files {
         let (found, _match_count) = search::search_stdin(
             &re,
             highlight_re.as_ref(),
+            stage1.as_ref(),
             &not_res,
             &args,
             &printer_opts,
@@ -136,8 +153,11 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
     let (found, errors, mut stats) = walk::walk_and_search(
         &re,
         highlight_re.as_ref(),
+        stage1.as_ref(),
         &pattern,
         highlight_pattern.as_deref(),
+        stage1_delim_pattern.as_deref(),
+        &stage1_add_patterns,
         &not_patterns,
         &args,
         &paths,

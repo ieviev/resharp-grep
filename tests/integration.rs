@@ -43,6 +43,11 @@ fn resharp() -> Command {
 }
 
 fn run_stdin(args: &[&str], input: &str) -> (String, i32) {
+    let (out, _, code) = run_stdin_full(args, input);
+    (out, code)
+}
+
+fn run_stdin_full(args: &[&str], input: &str) -> (String, String, i32) {
     use std::io::Write;
     let mut cmd = resharp();
     cmd.args(args);
@@ -53,8 +58,9 @@ fn run_stdin(args: &[&str], input: &str) -> (String, i32) {
     child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
     let out = child.wait_with_output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).trim_end().to_string();
     let code = out.status.code().unwrap_or(-1);
-    (stdout, code)
+    (stdout, stderr, code)
 }
 
 fn run_args(args: &[&str]) -> (String, i32) {
@@ -151,12 +157,6 @@ fn case_sensitive() {
 }
 
 #[test]
-fn smart_case_lower() {
-    let (out, _) = run_stdin(&["-n", "-S", "hello"], "hello world\nHello World\nHELLO WORLD\nhello\n");
-    assert_eq!(out, "1:hello world\n2:Hello World\n3:HELLO WORLD\n4:hello");
-}
-
-#[test]
 fn case_insensitive_union_all_terms() {
     // -i flag should apply to all terms of a union, not just the leftmost
     let input = "MIN\nMAX\n";
@@ -165,13 +165,6 @@ fn case_insensitive_union_all_terms() {
     let (out, _) = run_stdin(&["-n", "-i", "max|min"], input);
     assert_eq!(out, "1:MIN\n2:MAX", "max|min should match both MIN and MAX");
 }
-
-#[test]
-fn smart_case_upper() {
-    let (out, _) = run_stdin(&["-n", "-S", "Hello"], "hello world\nHello World\nHELLO WORLD\nhello\n");
-    assert_eq!(out, "2:Hello World");
-}
-
 
 #[test]
 fn max_count() {
@@ -403,7 +396,7 @@ fn lookahead_with_intersection() {
 #[test]
 fn paragraphs_blocks_cross_para() {
     let input = "first paragraph about\ncats and dogs together\n\nsecond paragraph about\nfish and birds\n\nthird paragraph with\ncats but no dogs\n";
-    let (out, code) = run_stdin(&["--paragraphs", "(_*cats_*)&(_*fish_*)"], input);
+    let (out, code) = run_stdin(&["-p", "(_*cats_*)&(_*fish_*)"], input);
     assert_eq!(out, "");
     assert_eq!(code, 1);
 }
@@ -411,7 +404,7 @@ fn paragraphs_blocks_cross_para() {
 #[test]
 fn paragraphs_within_para() {
     let input = "first paragraph about\ncats and dogs together\n\nsecond paragraph about\nfish and birds\n\nthird paragraph with\ncats but no dogs\n";
-    let (out, _) = run_stdin(&["-n", "--paragraphs", "(_*cats_*)&(_*dogs_*)"], input);
+    let (out, _) = run_stdin(&["-n", "-p", "(_*cats_*)&(_*dogs_*)"], input);
     let lines: Vec<&str> = out.lines().take(2).collect();
     assert_eq!(lines, vec!["1:first paragraph about", "2:cats and dogs together"]);
 }
@@ -420,7 +413,7 @@ fn paragraphs_within_para() {
 #[test]
 fn paragraphs_words_match() {
     let input = "first paragraph about\ncats and dogs together\n\nsecond paragraph about\nfish and birds\n";
-    let (out, code) = run_stdin(&["-n", "-p", "cats", "-p", "dogs"], input);
+    let (out, code) = run_stdin(&["-n", "-p", "-a", "cats", "-a", "dogs"], input);
     assert_eq!(code, 0);
     let lines: Vec<&str> = out.lines().take(2).collect();
     assert_eq!(lines, vec!["1:first paragraph about", "2:cats and dogs together"]);
@@ -429,7 +422,7 @@ fn paragraphs_words_match() {
 #[test]
 fn paragraphs_words_no_match_cross_para() {
     let input = "first paragraph about\ncats only\n\nsecond paragraph about\ndogs only\n";
-    let (out, code) = run_stdin(&["-p", "cats", "-p", "dogs"], input);
+    let (out, code) = run_stdin(&["-p", "-a", "cats", "-a", "dogs"], input);
     assert_eq!(out, "");
     assert_eq!(code, 1);
 }
@@ -437,7 +430,7 @@ fn paragraphs_words_no_match_cross_para() {
 #[test]
 fn paragraphs_words_single_word() {
     let input = "hello world\n\ngoodbye world\n";
-    let (out, code) = run_stdin(&["-p", "hello"], input);
+    let (out, code) = run_stdin(&["-p", "-a", "hello"], input);
     assert_eq!(code, 0);
     assert!(out.contains("hello world"));
     assert!(!out.contains("goodbye"));
@@ -446,7 +439,7 @@ fn paragraphs_words_single_word() {
 #[test]
 fn paragraphs_words_case_insensitive() {
     let input = "Hello World\nfoo bar\n\nother paragraph\n";
-    let (out, code) = run_stdin(&["-i", "-p", "hello", "-p", "foo"], input);
+    let (out, code) = run_stdin(&["-i", "-p", "-a", "hello", "-a", "foo"], input);
     assert_eq!(code, 0);
     assert!(out.contains("Hello World"));
     assert!(out.contains("foo bar"));
@@ -455,7 +448,7 @@ fn paragraphs_words_case_insensitive() {
 #[test]
 fn paragraphs_words_three() {
     let input = "the cat sat\non the mat\nwith a hat\n\njust a cat\nno mat here\n";
-    let (out, code) = run_stdin(&["-p", "cat", "-p", "mat", "-p", "hat"], input);
+    let (out, code) = run_stdin(&["-p", "-a", "cat", "-a", "mat", "-a", "hat"], input);
     assert_eq!(code, 0);
     assert!(out.contains("the cat sat"));
     assert!(out.contains("on the mat"));
@@ -467,7 +460,7 @@ fn paragraphs_words_three() {
 #[test]
 fn paragraphs_words_with_not() {
     let input = "cats and dogs\nare friends\n\ncats and birds\nare enemies\n";
-    let (out, code) = run_stdin(&["-p", "cats", "--not", "dogs"], input);
+    let (out, code) = run_stdin(&["-p", "-a", "cats", "--not", "dogs"], input);
     assert_eq!(code, 0);
     assert!(out.contains("birds"));
     assert!(!out.contains("dogs"));
@@ -476,7 +469,7 @@ fn paragraphs_words_with_not() {
 #[test]
 fn paragraphs_flag_with_not() {
     let input = "cats and dogs\nare friends\n\ncats and birds\nare enemies\n";
-    let (out, code) = run_stdin(&["--paragraphs", "(_*cats_*)", "--not", "dogs"], input);
+    let (out, code) = run_stdin(&["-p", "(_*cats_*)", "--not", "dogs"], input);
     assert_eq!(code, 0);
     assert!(out.contains("birds"));
     assert!(!out.contains("dogs"));
@@ -1972,4 +1965,49 @@ fn stdin_line_numbers_with_flag() {
     let (out, code) = run_stdin(&["-n", "--color", "never", "apple"], "apple\nbanana\napple pie\n");
     assert_eq!(code, 0);
     assert_eq!(out, "1:apple\n3:apple pie");
+}
+
+const CARGO_FIXTURE: &str = "[package]\nname = \"foo\"\nversion = \"0.1\"\n\n[dependencies]\nanyhow = \"1\"\nclap = { version = \"4\" }\nserde = \"1\"\n\n[dev-dependencies]\nmockito = \"1\"\n";
+
+#[test]
+fn scope_add_extracts_dep_names() {
+    let (out, code) = run_stdin(&["-S", r"^\[", "-s", r"^\[dependencies\]", "-o", "^[a-z_]+"], CARGO_FIXTURE);
+    assert_eq!(code, 0);
+    assert_eq!(out, "anyhow\nclap\nserde");
+}
+
+#[test]
+fn scope_add_filters_lines_in_section() {
+    let (out, code) = run_stdin(&["-S", r"^\[", "-s", r"^\[dependencies\]", "version"], CARGO_FIXTURE);
+    assert_eq!(code, 0);
+    assert_eq!(out, "clap = { version = \"4\" }");
+}
+
+#[test]
+fn scope_add_substring_matches_multiple_sections() {
+    let (out, code) = run_stdin(&["-S", r"^\[", "-s", r"dependencies\]", "-o", "^[a-z_]+"], CARGO_FIXTURE);
+    assert_eq!(code, 0);
+    assert_eq!(out, "anyhow\nclap\nserde\nmockito");
+}
+
+#[test]
+fn scope_add_multiple_must_all_appear() {
+    let (out, code) = run_stdin(&["-S", r"^\[", "-s", r"^\[dependencies\]", "-s", "anyhow", "-o", "^[a-z_]+"], CARGO_FIXTURE);
+    assert_eq!(code, 0);
+    assert_eq!(out, "anyhow\nclap\nserde");
+}
+
+#[test]
+fn scope_add_requires_scope_re() {
+    let (out, err, code) = run_stdin_full(&["-s", "foo", "bar"], "bar\n");
+    assert_eq!(out, "");
+    assert_eq!(code, 2);
+    assert!(err.contains("--scope-add") && err.contains("--scope-re"), "stderr was: {err}");
+}
+
+#[test]
+fn scope_add_respects_not_inside_scope() {
+    let (out, code) = run_stdin(&["-S", r"^\[", "-s", r"^\[dependencies\]", "-N", "clap", " = "], CARGO_FIXTURE);
+    assert_eq!(code, 0);
+    assert_eq!(out, "anyhow = \"1\"\nserde = \"1\"");
 }

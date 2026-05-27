@@ -48,9 +48,34 @@ pub fn any_not_matches(not_res: &[resharp::Regex], buf: &[u8]) -> bool {
     not_res.iter().any(|re| re.is_match(buf).unwrap_or(false))
 }
 
+pub struct Stage1<'a> {
+    pub delim: &'a resharp::Regex,
+    pub must_contain: &'a [resharp::Regex],
+}
+
+fn stage1_spans(buf: &[u8], s1: &Stage1) -> Result<Vec<(usize, usize)>, ()> {
+    let delims = s1.delim.find_all(buf).map_err(|_| ())?;
+    let mut spans = Vec::with_capacity(delims.len() + 1);
+    let mut prev = 0usize;
+    for d in &delims {
+        if d.start > prev {
+            spans.push((prev, d.start));
+        }
+        prev = d.start;
+    }
+    if prev < buf.len() {
+        spans.push((prev, buf.len()));
+    }
+    spans.retain(|&(s, e)| {
+        s1.must_contain.iter().all(|r| r.is_match(&buf[s..e]).unwrap_or(false))
+    });
+    Ok(spans)
+}
+
 pub fn search_buffer(
     re: &resharp::Regex,
     highlight_re: Option<&resharp::Regex>,
+    stage1: Option<&Stage1>,
     buf: &[u8],
     args: &Args,
     effective_max: Option<usize>,
@@ -64,7 +89,7 @@ pub fn search_buffer(
         };
     }
 
-    let all_matches = match re.find_all(buf) {
+    let mut all_matches = match re.find_all(buf) {
         Ok(m) => m,
         Err(_) => {
             return SearchResult {
@@ -75,6 +100,21 @@ pub fn search_buffer(
             };
         }
     };
+
+    if let Some(s1) = stage1 {
+        let spans = match stage1_spans(buf, s1) {
+            Ok(s) => s,
+            Err(_) => {
+                return SearchResult {
+                    matches: vec![],
+                    raw_matches: vec![],
+                    match_count: 0,
+                    had_error: true,
+                };
+            }
+        };
+        all_matches.retain(|m| spans.iter().any(|&(s, e)| s <= m.start && m.end <= e));
+    }
 
     let line_starts = build_line_index(buf);
     let mut line_matches: Vec<LineMatch> = Vec::new();
@@ -137,11 +177,10 @@ pub fn search_buffer(
             let ls = lm.line_start;
             let le = line_end(buf, ls);
             let line_buf = &buf[ls..le];
-            if let Ok(hl_matches) = hl.find_all(line_buf) {
-                if !hl_matches.is_empty() {
-                    lm.match_ranges = hl_matches.iter().map(|m| (m.start, m.end)).collect();
-                }
-            }
+            lm.match_ranges = match hl.find_all(line_buf) {
+                Ok(m) => m.iter().map(|m| (m.start, m.end)).collect(),
+                Err(_) => Vec::new(),
+            };
         }
     }
 
@@ -230,6 +269,7 @@ pub fn count_lines(buf: &[u8]) -> usize {
 pub fn search_file_to_writer(
     re: &resharp::Regex,
     highlight_re: Option<&resharp::Regex>,
+    stage1: Option<&Stage1>,
     not_res: &[resharp::Regex],
     path: &Path,
     args: &Args,
@@ -245,10 +285,10 @@ pub fn search_file_to_writer(
         return Ok((false, false, 0, line_count));
     }
 
-    let result = search_buffer(re, highlight_re, buf, args, effective_max);
+    let result = search_buffer(re, highlight_re, stage1, buf, args, effective_max);
 
     if result.had_error {
-        eprintln!("resharp: {}: DFA capacity exceeded, skipping", path.display());
+        eprintln!("re: {}: DFA capacity exceeded, skipping", path.display());
         return Ok((false, true, 0, line_count));
     }
 
@@ -327,6 +367,7 @@ pub fn paginate_chunk<'a>(
 pub fn search_stdin(
     re: &resharp::Regex,
     highlight_re: Option<&resharp::Regex>,
+    stage1: Option<&Stage1>,
     not_res: &[resharp::Regex],
     args: &Args,
     printer_opts: &PrinterOpts,
@@ -335,7 +376,7 @@ pub fn search_stdin(
     let mut stdin_buf = Vec::new();
     std::io::stdin().read_to_end(&mut stdin_buf)?;
 
-    let result = search_buffer(re, highlight_re, &stdin_buf, args, args.effective_max(0));
+    let result = search_buffer(re, highlight_re, stage1, &stdin_buf, args, args.effective_max(0));
 
     if result.had_error {
         anyhow::bail!("DFA capacity exceeded");
