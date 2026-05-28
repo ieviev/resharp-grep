@@ -21,7 +21,7 @@ clap_complete = "4"
 ignore = "0.4"
 memchr = "2"
 memmap2 = "0.9"
-resharp = { path = "/home/ian/f/myrepos/resharp/resharp-engine" }
+resharp = { path = "vendor-resharp/resharp-engine" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 termcolor = "1"

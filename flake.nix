@@ -55,17 +55,24 @@
           vendored = pkgs.rustPlatform.importCargoLock {
             lockFile = ./Cargo.lock;
           };
+          combinedSrc = pkgs.runCommand "re-src" { } ''
+            mkdir -p $out
+            cp -r ${pkgs.lib.cleanSource ./.}/. $out/
+            chmod -R +w $out
+            rm -rf $out/vendor-resharp
+            cp -r ${pkgs.lib.cleanSource /home/ian/f/myrepos/resharp} $out/vendor-resharp
+          '';
         in
         {
           default = pkgs.resharp;
 
           dist = pkgs.stdenv.mkDerivation {
-            HOME = "/build";
             name = "re-dist";
-            src = pkgs.lib.cleanSource ./.;
+            src = combinedSrc;
             nativeBuildInputs = [ toolchain pkgs.zig pkgs.cargo-zigbuild ];
 
             configurePhase = ''
+              export HOME=$TMPDIR
               mkdir -p .cargo
               cat > .cargo/config.toml << EOF
 [source.crates-io]
