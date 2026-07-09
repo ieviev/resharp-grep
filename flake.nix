@@ -36,7 +36,7 @@
 
       distTargets = [
         { rust = "x86_64-unknown-linux-gnu";  out = "re-x86_64-linux"; }
-        { rust = "aarch64-unknown-linux-musl"; out = "re-aarch64-linux"; }
+        { rust = "aarch64-unknown-linux-musl"; out = "re-aarch64-linux"; rustflags = "-C link-self-contained=no"; }
         { rust = "aarch64-apple-darwin";       out = "re-aarch64-macos"; }
         { rust = "x86_64-pc-windows-gnu";      out = "re-x86_64-windows.exe"; }
       ];
@@ -52,39 +52,27 @@
             fenixPkgs.stable.cargo
             fenixPkgs.stable.rustc
           ] ++ map (t: fenixPkgs.targets.${t.rust}.stable.rust-std) distTargets);
-          vendored = pkgs.rustPlatform.importCargoLock {
-            lockFile = ./Cargo.lock;
-          };
-          combinedSrc = pkgs.runCommand "re-src" { } ''
-            mkdir -p $out
-            cp -r ${pkgs.lib.cleanSource ./.}/. $out/
-            chmod -R +w $out
-            rm -rf $out/vendor-resharp
-            cp -r ${pkgs.lib.cleanSource /home/ian/f/myrepos/resharp} $out/vendor-resharp
-          '';
         in
         {
           default = pkgs.resharp;
 
           dist = pkgs.stdenv.mkDerivation {
             name = "re-dist";
-            src = combinedSrc;
+            src = pkgs.lib.cleanSource ./.;
             nativeBuildInputs = [ toolchain pkgs.zig pkgs.cargo-zigbuild ];
 
             configurePhase = ''
               export HOME=$TMPDIR
-              mkdir -p .cargo
-              cat > .cargo/config.toml << EOF
-[source.crates-io]
-replace-with = "vendored-sources"
-[source.vendored-sources]
-directory = "${vendored}"
-EOF
-            '';
+            '' + builtins.concatStringsSep "\n" (map (t:
+              "unset CARGO_TARGET_${pkgs.lib.toUpper (builtins.replaceStrings [ "-" ] [ "_" ] t.rust)}_LINKER"
+            ) distTargets);
 
             buildPhase =
               builtins.concatStringsSep "\n"
-                (map (t: "cargo zigbuild --release --target ${t.rust}") distTargets);
+                (map (t:
+                  let env = if t ? rustflags then "RUSTFLAGS=${pkgs.lib.escapeShellArg t.rustflags} " else "";
+                  in "${env}cargo zigbuild --release --target ${t.rust}"
+                ) distTargets);
 
             installPhase = ''
               mkdir -p $out

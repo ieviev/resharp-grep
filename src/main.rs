@@ -41,13 +41,6 @@ fn run() -> anyhow::Result<(bool, bool, Option<walk::Stats>)> {
         return Ok((true, false, None));
     }
 
-    if args.scope == Some(args::Scope::Block) {
-        anyhow::bail!("--scope block requires --delimiters (not yet implemented)");
-    }
-    if args.scope == Some(args::Scope::Indent) {
-        anyhow::bail!("--scope indent is not yet implemented");
-    }
-
     let color_choice = args.color_choice();
     let start = Instant::now();
     let has_exec = args.exec.is_some();

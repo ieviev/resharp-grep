@@ -46,7 +46,7 @@ pub fn walk_and_search(
     color_choice: termcolor::ColorChoice,
 ) -> anyhow::Result<(bool, bool, Stats)> {
     let max_filesize = args.parse_max_filesize()?;
-    let sorted = args.sort.as_deref() == Some("path");
+    let sorted = args.sort == Some(crate::args::SortBy::Path);
 
     let use_parallel = !sorted && args.head.is_none() && args.offset.is_none() && match args.threads {
         Some(n) => n > 1,
@@ -96,7 +96,7 @@ fn build_walker(
             types.definitions().iter().map(|d| d.name().to_string()).collect();
         for t in args.file_type.iter().chain(args.type_not.iter()) {
             if !known.contains(t) {
-                types.add(t, &format!("*.{}", t))?;
+                anyhow::bail!("unrecognized file type: {t} (see --type-list)");
             }
         }
         for t in &args.file_type {
@@ -319,15 +319,33 @@ fn walk_parallel(
                 return Box::new(move |_| ignore::WalkState::Quit);
             }
         };
-        let highlight_re = highlight_pattern.as_ref().and_then(|hp| {
-            resharp::Regex::with_options(hp, args.engine_opts()).ok()
-        });
-        let stage1_delim_re = stage1_delim_pattern.as_ref().and_then(|sp| {
-            resharp::Regex::with_options(sp, args.engine_opts()).ok()
-        });
-        let stage1_add_res: Vec<resharp::Regex> = stage1_add_patterns.iter()
-            .filter_map(|p| resharp::Regex::with_options(p, args.engine_opts()).ok())
-            .collect();
+        let highlight_re = match highlight_pattern.as_ref()
+            .map(|hp| resharp::Regex::with_options(hp, args.engine_opts()))
+            .transpose() {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("re: failed to compile highlight pattern: {e}");
+                    return Box::new(move |_| ignore::WalkState::Quit);
+                }
+            };
+        let stage1_delim_re = match stage1_delim_pattern.as_ref()
+            .map(|sp| resharp::Regex::with_options(sp, args.engine_opts()))
+            .transpose() {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("re: failed to compile scope-re pattern: {e}");
+                    return Box::new(move |_| ignore::WalkState::Quit);
+                }
+            };
+        let stage1_add_res: Vec<resharp::Regex> = match stage1_add_patterns.iter()
+            .map(|p| resharp::Regex::with_options(p, args.engine_opts()))
+            .collect::<Result<Vec<_>, _>>() {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("re: failed to compile scope-add pattern: {e}");
+                    return Box::new(move |_| ignore::WalkState::Quit);
+                }
+            };
         let not_res: Vec<resharp::Regex> = match not_patterns.iter()
             .map(|p| resharp::Regex::with_options(p, args.engine_opts()))
             .collect::<Result<Vec<_>, _>>() {
@@ -375,7 +393,7 @@ pub fn walk_list_files(
     let count_lines = args.stats;
 
     let mut entries = walk_entries(&walker, max_filesize);
-    if args.sort.as_deref() == Some("path") {
+    if args.sort == Some(crate::args::SortBy::Path) {
         entries.sort();
     }
 
@@ -430,7 +448,7 @@ pub fn collect_files(
         result.push(std::path::absolute(&path).unwrap_or(path));
     }
 
-    if args.sort.as_deref() == Some("path") {
+    if args.sort == Some(crate::args::SortBy::Path) {
         result.sort();
     }
 
@@ -484,7 +502,7 @@ pub fn collect_matching_files(
         }
     }
 
-    if args.sort.as_deref() == Some("path") {
+    if args.sort == Some(crate::args::SortBy::Path) {
         result.sort();
     }
 

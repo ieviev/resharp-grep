@@ -10,10 +10,22 @@ pub enum Scope {
     Paragraph,
     File,
     Multiline,
-    Block,
-    Indent,
     #[value(skip)]
     Custom,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum ColorMode {
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum SortBy {
+    Path,
 }
 
 #[derive(Parser, Debug)]
@@ -28,7 +40,7 @@ pub enum Scope {
   re --near 5 -a unsafe -a unwrap src/      unsafe code that unwraps within 5 lines
   re -f -a tokio -a diesel src/             files using both tokio and diesel
   re -p -a password -a plaintext .          paragraphs mentioning both password and plaintext
-  re -s '\\n## ' -a API -a deprecated docs/ markdown sections discussing both API and deprecation
+  re -S '\\n## ' -a API -a deprecated docs/ markdown sections discussing both API and deprecation
   re -S '---' -a host -a port config/       YAML sections with both host and port (-S is --scope-re)
   re -S '^.' -s 'dependencies' name Cargo.toml      search name inside the [dependencies] section
   re --json TODO src/                       JSON output, one object per match",
@@ -52,7 +64,7 @@ pub struct Args {
     pub pattern_file: Vec<PathBuf>,
 
     /// file scope search (equivalent to --scope file)
-    #[arg(short = 'f')]
+    #[arg(short = 'f', conflicts_with_all = ["paragraph_scope"])]
     pub file_scope: bool,
 
     /// case insensitive search
@@ -123,8 +135,8 @@ pub struct Args {
     pub context: Option<usize>,
 
     /// color output: auto, always, never
-    #[arg(long = "color", value_name = "WHEN", default_value = "auto")]
-    pub color: String,
+    #[arg(long = "color", value_name = "WHEN", value_enum, default_value = "auto")]
+    pub color: ColorMode,
 
     /// group results by file (default for terminal)
     #[arg(long = "heading")]
@@ -187,8 +199,8 @@ pub struct Args {
     pub max_filesize: Option<String>,
 
     /// sort results by path
-    #[arg(long = "sort", value_name = "CRITERION")]
-    pub sort: Option<String>,
+    #[arg(long = "sort", value_name = "CRITERION", value_enum)]
+    pub sort: Option<SortBy>,
 
     /// paragraph scope (equivalent to --scope paragraph)
     #[arg(short = 'p', long = "paragraphs", alias = "§")]
@@ -199,11 +211,11 @@ pub struct Args {
     pub completions: Option<clap_complete::Shell>,
 
     /// multiline mode: match across lines (equivalent to --scope multiline)
-    #[arg(short = 'M', long = "multiline")]
+    #[arg(short = 'M', long = "multiline", conflicts_with_all = ["file_scope", "paragraph_scope"])]
     pub multiline: bool,
 
-    /// scope keyword for intersection: line, paragraph, file, multiline, block, indent
-    #[arg(long = "scope", value_name = "SCOPE", value_enum, conflicts_with = "scope_re")]
+    /// scope keyword for intersection: line, paragraph, file, multiline
+    #[arg(long = "scope", value_name = "SCOPE", value_enum, conflicts_with_all = ["scope_re", "multiline", "file_scope", "paragraph_scope"])]
     pub scope: Option<Scope>,
 
     /// custom scope boundary as a RE# pattern (terms must co-occur between delimiter occurrences)
@@ -215,7 +227,7 @@ pub struct Args {
     pub scope_add: Vec<String>,
 
     /// find patterns within N lines of each other (use with --and)
-    #[arg(short = 'P', long = "near", value_name = "NUM")]
+    #[arg(long = "near", value_name = "NUM")]
     pub near: Option<usize>,
 
     /// stop after NUM total matches across all files
@@ -336,10 +348,10 @@ impl Args {
 
         if total_terms > 0 {
             if !self.regexp.is_empty() || !self.pattern_file.is_empty() {
-                anyhow::bail!("-e/--file cannot be combined with -W/-p/-F word patterns");
+                anyhow::bail!("-e/--file cannot be combined with -a/-F word patterns");
             }
             if self.near.is_some() && total_terms < 2 {
-                anyhow::bail!("--near requires at least 2 terms (use -W, --and, or & in pattern)");
+                anyhow::bail!("--near requires at least 2 terms (use -a or -F, repeatable, or & in pattern)");
             }
             let (pattern, file_nots) = self.build_words_pattern(&words);
             return Ok((pattern, file_nots));
@@ -399,7 +411,7 @@ impl Args {
 
         // --near requires at least 2 terms
         if self.near.is_some() && self.and.is_empty() {
-            anyhow::bail!("--near requires at least 2 terms (use -W, --and, or & in pattern)");
+            anyhow::bail!("--near requires at least 2 terms (use -a/--and, repeatable, or & in pattern)");
         }
 
         // apply -E body excludes (no scope anchoring)
@@ -557,7 +569,6 @@ impl Args {
                 let delim = self.scope_re.as_deref().expect("scope=custom implies scope_re is set");
                 format!("({combined})&~(_*{delim}_*)")
             }
-            other => panic!("unhandled scope keyword: {other:?}"),
         };
         self.apply_near(scoped)
     }
@@ -609,10 +620,10 @@ impl Args {
         if self.json || std::env::var_os("NO_COLOR").is_some() {
             return termcolor::ColorChoice::Never;
         }
-        match self.color.as_str() {
-            "always" => termcolor::ColorChoice::Always,
-            "never" => termcolor::ColorChoice::Never,
-            _ => {
+        match self.color {
+            ColorMode::Always => termcolor::ColorChoice::Always,
+            ColorMode::Never => termcolor::ColorChoice::Never,
+            ColorMode::Auto => {
                 if std::io::stdout().is_terminal() {
                     termcolor::ColorChoice::Auto
                 } else {
@@ -725,6 +736,14 @@ pub fn parse() -> anyhow::Result<Args> {
         args.glob.push(format!("!{g}"));
     }
 
+    if args.multiline {
+        args.scope = Some(Scope::Multiline);
+    } else if args.file_scope {
+        args.scope = Some(Scope::File);
+    } else if args.paragraph_scope {
+        args.scope = Some(Scope::Paragraph);
+    }
+
     // when -e/--file/-F is used, positional PATTERN is a PATH
     let has_words = args.fixed_strings.as_ref().map_or(false, |v| !v.is_empty());
     if (!args.regexp.is_empty() || !args.pattern_file.is_empty() || has_words || args.files)
@@ -732,16 +751,6 @@ pub fn parse() -> anyhow::Result<Args> {
     {
         let pat = args.pattern.take().unwrap();
         args.paths.insert(0, PathBuf::from(pat));
-    }
-
-    // -M is shorthand for --scope multiline
-    if args.multiline && args.scope.is_none() {
-        args.scope = Some(Scope::Multiline);
-    }
-
-    // -f is shorthand for --scope file
-    if args.file_scope && args.scope.is_none() {
-        args.scope = Some(Scope::File);
     }
 
     // -a or -N without a base pattern: positional arg is a path, not a pattern
@@ -758,11 +767,6 @@ pub fn parse() -> anyhow::Result<Args> {
             let pat = args.pattern.take().unwrap();
             args.paths.insert(0, PathBuf::from(pat));
         }
-    }
-
-    // -p is shorthand for --scope paragraph
-    if args.paragraph_scope && args.scope.is_none() {
-        args.scope = Some(Scope::Paragraph);
     }
 
     // --scope file with only --not terms: invert to files-without-match
